@@ -284,8 +284,8 @@ function runDistE2E() {
       windowsHide: true,
     });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.match(result.stdout, /# pass 4\b/);
-    assert.match(result.stdout, /# fail 0\b/);
+    assert.match(result.stdout, /(?:#|ℹ)\s*pass 4\b/);
+    assert.match(result.stdout, /(?:#|ℹ)\s*fail 0\b/);
     return "4 pipeline tests (ORIGINAL + AUTO + NO-FALLBACK + byte fidelity)";
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });

@@ -1,9 +1,6 @@
-/** Pure-Node MP4/MOV/M4A demuxer — audio track only, zero dependency.
- * Byte surgery instead of transcode: parse boxes → sample table → ranged reads.
- * Memory law: NO per-sample arrays. Sample tables stay run-length encoded and
- * every lookup walks the RLE tables — O(table entries), not O(sample count),
- * so a 100-hour track (≈17M AAC access units) costs kilobytes, not gigabytes.
- * NO-FALLBACK: unsupported codecs are hard errors naming the codec, never guessed. */
+/** Pure-Node ISO-BMFF (MP4/MOV/M4A + Fragmented fMP4) Demuxer — Zero-Allocation TypedArray RLE.
+ * Supports both Progressive MP4 (`stbl`: `stts`, `stsc`, `stsz`, `stco`/`co64`) and
+ * Fragmented MP4 (`mvex`/`trex` + `moof`/`traf`/`tfhd`/`trun`) with `elst` edit-list awareness. */
 
 import fs from "node:fs";
 import { ASRError } from "../core/errors.js";
@@ -13,7 +10,6 @@ export const AAC_FREQ_TABLE = Object.freeze([
   24000, 22050, 16000, 12000, 11025, 8000, 7350,
 ]);
 
-/** Tiny MSB-first bit reader for AudioSpecificConfig. */
 class BitReader {
   #buf;
   #bit = 0;
@@ -32,7 +28,6 @@ class BitReader {
   }
 }
 
-/** Metadata reader — small positional reads over one open fd. */
 class MetaReader {
   #fd;
   constructor(fd) {
@@ -68,7 +63,6 @@ function* iterBoxes(reader, start, end, context) {
     let headerLen = 8;
     if (size === 1) {
       const large = reader.u64(Number(pos) + 8);
-      // Allow >2GiB boxes when skipping (e.g. multi-GB mdat); EOF check below still guards.
       if (large < 16n) throw new ASRError(`${context}: box largesize ${large} < header`);
       size = Number(large);
       if (!Number.isSafeInteger(size)) throw new ASRError(`${context}: box quá lớn vượt giới hạn JS`);
@@ -84,12 +78,8 @@ function* iterBoxes(reader, start, end, context) {
   }
 }
 
-/** Box end offset as Number (boxes are ≤2GiB by iterBoxes contract). */
 const endOf = (box) => Number(box.start + BigInt(box.size));
 
-/** Length-guarded scalar readers over already-loaded bodies.
- * Every direct readUInt32BE/readBigUInt64BE in this file goes through these so
- * truncated boxes surface as ASRError, never native RangeError. */
 function need(buf, off, len, context) {
   if (!Number.isInteger(off) || !Number.isInteger(len) || off < 0 || len < 0 || off + len > buf.length) {
     throw new ASRError(`${context}: box cụt (cần [${off},${off + len}) trong ${buf.length}B)`);
@@ -98,6 +88,10 @@ function need(buf, off, len, context) {
 function u32b(buf, off, context) {
   need(buf, off, 4, context);
   return buf.readUInt32BE(off);
+}
+function i32b(buf, off, context) {
+  need(buf, off, 4, context);
+  return buf.readInt32BE(off);
 }
 function u64b(buf, off, context) {
   need(buf, off, 8, context);
@@ -111,7 +105,6 @@ function findBox(reader, start, end, wanted, context) {
   return null;
 }
 
-/** Variable-length MPEG-4 descriptor length (0x80 continuation bytes). */
 function readDescriptor(buf, pos) {
   if (pos >= buf.length) throw new ASRError("esds: descriptor thiếu tag");
   const tag = buf[pos++];
@@ -126,7 +119,6 @@ function readDescriptor(buf, pos) {
   return { tag, start: pos, len };
 }
 
-/** Parse AudioSpecificConfig → {audioObjectType, freqIdx, sampleRate, chanCfg}. */
 export function parseAsc(asc) {
   if (!asc || asc.length < 2) throw new ASRError("ASC rỗng/hỏng");
   const br = new BitReader(asc);
@@ -153,37 +145,32 @@ export function parseAsc(asc) {
   }
 }
 
-/** esds fullbox body → DecoderSpecificInfo (ASC) bytes. Throws on non-AAC OTI. */
 function parseEsdsPayload(payload, context) {
   const es = readDescriptor(payload, 0);
   if (es.tag !== 0x03) throw new ASRError(`${context}: esds thiếu ES_Descriptor (tag ${es.tag})`);
-  let p = es.start;
-  p += 2; // ES_ID
+  let p = es.start + 2;
   if (p >= payload.length) throw new ASRError(`${context}: esds ES_Descriptor cụt`);
   const flags = payload[p++];
-  if (flags & 0x80) p += 2; // streamDependenceFlag → dependsOn_ES_ID
+  if (flags & 0x80) p += 2;
   if (flags & 0x40) {
     if (p >= payload.length) throw new ASRError(`${context}: esds URL_Flag cụt`);
-    p += 1 + payload[p]; // urlstring length byte + string
+    p += 1 + payload[p];
   }
-  if (flags & 0x20) p += 2; // OCRstreamFlag → OCR_ES_Id
+  if (flags & 0x20) p += 2;
   const dc = readDescriptor(payload, p);
   if (dc.tag !== 0x04) throw new ASRError(`${context}: esds thiếu DecoderConfigDescriptor (tag ${dc.tag})`);
   if (dc.start >= payload.length) throw new ASRError(`${context}: DecoderConfigDescriptor cụt`);
   const oti = payload[dc.start];
   if (oti !== 0x40 && !(oti >= 0x66 && oti <= 0x68)) {
-    throw new ASRError(
-      `${context}: audio object type 0x${oti.toString(16)} không phải AAC — NO-FALLBACK`,
-    );
+    throw new ASRError(`${context}: audio object type 0x${oti.toString(16)} không phải AAC — NO-FALLBACK`);
   }
-  const dsiAt = dc.start + 13; // oti(1)+streamType(1)+bufferSizeDB(3)+maxBitrate(4)+avgBitrate(4)
+  const dsiAt = dc.start + 13;
   if (dsiAt >= payload.length) throw new ASRError(`${context}: mp4a thiếu DecoderSpecificInfo (ASC)`);
   const dsi = readDescriptor(payload, dsiAt);
   if (dsi.tag !== 0x05) throw new ASRError(`${context}: esds thiếu DecoderSpecificInfo (tag ${dsi.tag})`);
   return payload.subarray(dsi.start, dsi.start + dsi.len);
 }
 
-/** Scan sample-entry child boxes (recursing into wave) for esds → ASC. */
 function findAscInEntry(reader, from, to, ctx) {
   for (const box of iterBoxes(reader, from, to, ctx)) {
     if (box.type === "esds") {
@@ -198,17 +185,43 @@ function findAscInEntry(reader, from, to, ctx) {
   return null;
 }
 
-function requireChild(reader, stblBox, type, ctx) {
-  const box = findBox(reader, Number(stblBox.dataStart), endOf(stblBox), type, ctx);
+function requireChild(reader, parentBox, type, ctx) {
+  const box = findBox(reader, Number(parentBox.dataStart), endOf(parentBox), type, ctx);
   if (!box) throw new ASRError(`${ctx}: thiếu ${type}`);
   return box;
 }
 
-/**
- * Parse one audio trak → track description with RLE sample tables.
- * Returns null when handler isn't sound; throws on structural damage or
- * unsupported codecs (caller aggregates per-track messages).
- */
+function parseTrackId(reader, trakBox, context) {
+  const tkhd = findBox(reader, Number(tkhdBox(trakBox)), endOf(trakBox), "tkhd", context);
+  if (!tkhd) return 1;
+  const v = reader.read(Number(tkhd.dataStart), 1)[0];
+  return reader.u32(Number(tkhd.dataStart) + (v === 1 ? 20 : 12));
+}
+
+function tkhdBox(trakBox) {
+  return trakBox.dataStart;
+}
+
+function parseTrexDefaults(reader, moovBox) {
+  const defaults = new Map();
+  const mvex = findBox(reader, Number(moovBox.dataStart), endOf(moovBox), "mvex", "moov/mvex");
+  if (!mvex) return defaults;
+  for (const box of iterBoxes(reader, Number(mvex.dataStart), endOf(mvex), "mvex")) {
+    if (box.type !== "trex") continue;
+    const body = reader.read(Number(box.dataStart) + 4, endOf(box) - (Number(box.dataStart) + 4));
+    if (body.length >= 20) {
+      const trackId = body.readUInt32BE(0);
+      defaults.set(trackId, {
+        defaultSampleDescIdx: body.readUInt32BE(4),
+        defaultSampleDuration: body.readUInt32BE(8),
+        defaultSampleSize: body.readUInt32BE(12),
+        defaultSampleFlags: body.readUInt32BE(16),
+      });
+    }
+  }
+  return defaults;
+}
+
 function parseAudioTrak(reader, trakBox, context) {
   const mdia = findBox(reader, Number(trakBox.dataStart), endOf(trakBox), "mdia", context);
   if (!mdia) return null;
@@ -217,6 +230,7 @@ function parseAudioTrak(reader, trakBox, context) {
   const handler = reader.type(Number(hdlr.dataStart) + 8);
   if (handler !== "soun") return null;
 
+  const trackId = parseTrackId(reader, trakBox, context);
   const mdhd = requireChild(reader, mdia, "mdhd", context);
   const mv = reader.read(Number(mdhd.dataStart), 1)[0];
   let timescale;
@@ -246,8 +260,6 @@ function parseAudioTrak(reader, trakBox, context) {
   if (!Number.isSafeInteger(entrySize) || entrySize < 8) {
     throw new ASRError(`${stblCtx}: sample entry size ${entrySize} vô lý`);
   }
-  // Declared size governs, but clamp to stsd so an overstated size (seen in
-  // the wild and in synthetic fixtures) cannot pull reads into the next box.
   const entryEnd = Math.min(entryDataStart + entrySize, stsdEnd);
   const format = reader.type(entryDataStart + 4);
 
@@ -256,10 +268,11 @@ function parseAudioTrak(reader, trakBox, context) {
   if (format === "enca") {
     throw new ASRError(`${stblCtx}: audio track bị mã hóa DRM — không xử lý được`);
   } else if (format === "mp4a") {
-    const specBase = entryDataStart + 8; // past size+format
+    const specBase = entryDataStart + 8;
     const ver = reader.read(specBase + 8, 2).readUInt16BE(0);
-    if (ver !== 0 && ver !== 1 && ver !== 2)
+    if (ver !== 0 && ver !== 1 && ver !== 2) {
       throw new ASRError(`${stblCtx}: mp4a version ${ver} không hỗ trợ (cần 0/1/2)`);
+    }
     const extLen = ver === 2 ? 36 : ver === 1 ? 16 : 0;
     const childrenFrom = specBase + 28 + extLen;
     if (childrenFrom > entryEnd) {
@@ -285,14 +298,24 @@ function parseAudioTrak(reader, trakBox, context) {
   if (!stco) throw new ASRError(`${stblCtx}: thiếu stco/co64`);
 
   const body = (box) => reader.read(Number(box.dataStart) + 4, endOf(box) - (Number(box.dataStart) + 4));
+  const sttsBody = body(stts);
+  const sttsEntries = u32b(sttsBody, 0, "stts");
+
   const track = {
+    trackId,
     codec,
     ...(codec === "aac" ? { ...parseAsc(asc), ascBytes: Buffer.from(asc) } : {}),
     timescale,
     mediaDurationRaw,
   };
+
+  if (sttsEntries === 0) {
+    track.isFragmentedCandidate = true;
+    return track;
+  }
+
   attachSampleTable(track, {
-    sttsBody: body(stts),
+    sttsBody,
     stscBody: body(stsc),
     stszBody: body(stsz),
     stcoKind: stco.type,
@@ -302,11 +325,8 @@ function parseAudioTrak(reader, trakBox, context) {
 }
 
 /**
- * Attach RLE sample-table accessors onto a track object:
- *   auCount · durationS · auDtsS(i) · auIndexAtS(s) · iterateAus(from,to)
- * The cursor inside auLocation only ever moves FORWARD across ascending
- * queries — cut planning asks ~2×chunks indices in order, so total walk cost
- * is O(chunks + chunks) regardless of how many millions of AUs exist.
+ * Attach flat TypedArray RLE sample-table accessors onto a progressive MP4 track.
+ * Memory footprint is O(RLE runs) in flat Uint32Array/Float64Array buffers.
  */
 function attachSampleTable(track, t) {
   const stts = t.sttsBody;
@@ -314,30 +334,31 @@ function attachSampleTable(track, t) {
   const sttsEntries = u32b(stts, 0, "stts");
   if (sttsEntries === 0) throw new ASRError("stts rỗng — timeline rỗng");
   need(stts, 0, 4 + sttsEntries * 8, "stts");
-  const pairs = [];
+
+  const sttsCounts = new Uint32Array(sttsEntries);
+  const sttsDeltas = new Uint32Array(sttsEntries);
+  const cumCounts = new Float64Array(sttsEntries);
+  const cumTicks = new Float64Array(sttsEntries);
+  let accCount = 0;
+  let accTicks = 0;
+
   for (let e = 0, off = 4; e < sttsEntries; e++, off += 8) {
     const count = u32b(stts, off, "stts");
     const delta = u32b(stts, off + 4, "stts");
     if (!(count >= 1)) throw new ASRError(`stts hàng ${e} count ${count} vô lý (cần ≥1)`);
     if (!(delta >= 1)) throw new ASRError(`stts hàng ${e} delta ${delta} vô lý (cần ≥1)`);
-    pairs.push([count, delta]);
-  }
-  const cumCounts = new Float64Array(sttsEntries);
-  const cumTicks = new Float64Array(sttsEntries);
-  let accCount = 0;
-  let accTicks = 0;
-  for (let e = 0; e < sttsEntries; e++) {
-    accCount += pairs[e][0];
-    accTicks += pairs[e][0] * pairs[e][1];
+    sttsCounts[e] = count;
+    sttsDeltas[e] = delta;
+    accCount += count;
+    accTicks += count * delta;
     cumCounts[e] = accCount;
     cumTicks[e] = accTicks;
   }
+
   const auCount = accCount;
   const ts = track.timescale || 1;
-
   track.auCount = auCount;
 
-  /** Decode time of AU index (seconds) — O(1) cursor hint + binary search over RLE entries. */
   let dtsHint = 0;
   track.auDtsS = function auDtsS(index) {
     if (!Number.isInteger(index) || index < 0 || index >= auCount) {
@@ -366,14 +387,13 @@ function attachSampleTable(track, t) {
     }
     const prevSamples = e > 0 ? cumCounts[e - 1] : 0;
     const prevTicks = e > 0 ? cumTicks[e - 1] : 0;
-    return (prevTicks + (index - prevSamples) * pairs[e][1]) / ts;
+    return (prevTicks + (index - prevSamples) * sttsDeltas[e]) / ts;
   };
 
   const lastTick = sttsEntries > 0 ? cumTicks[sttsEntries - 1] : 0;
   const declared = Number(track.mediaDurationRaw) / ts;
   track.durationS = Math.max(lastTick / ts, declared > 0 ? declared : 0);
 
-  /** First AU whose decode time ≥ seconds — binary search on cumulative ticks. */
   track.auIndexAtS = function auIndexAtS(seconds) {
     if (!(seconds > 0)) return 0;
     const target = seconds * ts;
@@ -391,17 +411,12 @@ function attachSampleTable(track, t) {
     }
     const prevSamples = entry > 0 ? cumCounts[entry - 1] : 0;
     const prevTicks = entry > 0 ? cumTicks[entry - 1] : 0;
-    const delta = pairs[entry][1];
+    const delta = sttsDeltas[entry];
     if (delta <= 0) return Math.min(auCount - 1, prevSamples);
     const into = Math.floor((target - prevTicks) / delta);
     return Math.max(0, Math.min(auCount - 1, prevSamples + into));
   };
 
-  // --- stsz ---
-  // NOTE: stsz is the one sanctioned O(N)-bytes table (4B/sample VBR sizes).
-  // MP4 offers no RLE for sizes, so a 17M-AU track legitimately carries ~68MB
-  // here. We keep it as a flat Buffer (not per-sample objects) and guard its
-  // length strictly; uniform-size tracks carry only the 8B header.
   const stsz = t.stszBody;
   need(stsz, 0, 8, "stsz");
   const uniformSize = u32b(stsz, 0, "stsz");
@@ -414,64 +429,62 @@ function attachSampleTable(track, t) {
       throw new ASRError(`stsz count ${stszCount} ≠ stts count ${auCount}`);
     }
     need(stsz, 0, 8 + stszCount * 4, "stsz");
-  } else {
-    if (stsz.length < 8) throw new ASRError("stsz uniform header cụt");
   }
 
-  // --- stsc rows: [firstChunk1based, samplesPerChunk] ---
   const stsc = t.stscBody;
   need(stsc, 0, 4, "stsc");
   const stscEntries = u32b(stsc, 0, "stsc");
   if (stscEntries === 0) throw new ASRError("stsc rỗng — chunk map rỗng");
   need(stsc, 0, 4 + stscEntries * 12, "stsc");
-  const rows = [];
+
+  const stscFirstChunk = new Uint32Array(stscEntries);
+  const stscSamplesPerChunk = new Uint32Array(stscEntries);
   for (let e = 0, off = 4; e < stscEntries; e++, off += 12) {
     const first = u32b(stsc, off, "stsc");
     const per = u32b(stsc, off + 4, "stsc");
     const descIdx = u32b(stsc, off + 8, "stsc");
     if (e === 0 && first < 1) throw new ASRError(`stsc hàng 0 firstChunk ${first} vô lý (cần ≥1)`);
-    if (e > 0 && !(first > rows[e - 1][0])) {
-      throw new ASRError(`stsc hàng ${e} firstChunk ${first} không tăng đơn điệu (trước ${rows[e - 1][0]})`);
+    if (e > 0 && !(first > stscFirstChunk[e - 1])) {
+      throw new ASRError(`stsc hàng ${e} firstChunk ${first} không tăng đơn điệu (trước ${stscFirstChunk[e - 1]})`);
     }
     if (!(per >= 1)) throw new ASRError(`stsc hàng ${e} samplesPerChunk ${per} vô lý (cần ≥1)`);
     if (!(descIdx >= 1)) throw new ASRError(`stsc hàng ${e} sampleDescIndex ${descIdx} vô lý (cần ≥1)`);
-    rows.push([first, per]);
+    stscFirstChunk[e] = first;
+    stscSamplesPerChunk[e] = per;
   }
 
-  // --- chunk offsets ---
   const stco = t.stcoBody;
   need(stco, 0, 4, "stco/co64");
   const chunkCount = u32b(stco, 0, "stco/co64");
   if (chunkCount === 0) throw new ASRError("stco/co64 rỗng — không có chunk nào");
   const co64 = t.stcoKind === "co64";
   need(stco, 0, 4 + chunkCount * (co64 ? 8 : 4), "stco/co64");
-  if (rows[rows.length - 1][0] > chunkCount) {
-    throw new ASRError(`stsc firstChunk ${rows[rows.length - 1][0]} vượt chunkCount ${chunkCount}`);
+  if (stscFirstChunk[stscEntries - 1] > chunkCount) {
+    throw new ASRError(`stsc firstChunk ${stscFirstChunk[stscEntries - 1]} vượt chunkCount ${chunkCount}`);
   }
   const chunkOffset = (ci) =>
     co64 ? Number(u64b(stco, 4 + ci * 8, "co64")) : u32b(stco, 4 + ci * 4, "stco");
 
-  // Zero-alloc chunk→firstAU: rows (R ≤ dozens) carry prefix sums, chunkCount
-  // (possibly millions) never materializes as an array. O(R) memory, O(log R) lookup.
-  const rowFirstAu = new Array(rows.length);
+  const rowFirstAu = new Float64Array(stscEntries);
   {
     let acc = 0;
-    for (let e = 0; e < rows.length; e++) {
+    for (let e = 0; e < stscEntries; e++) {
       rowFirstAu[e] = acc;
-      const curStart = rows[e][0] - 1;
-      const nextStart = e + 1 < rows.length ? rows[e + 1][0] - 1 : chunkCount;
+      const curStart = stscFirstChunk[e] - 1;
+      const nextStart = e + 1 < stscEntries ? stscFirstChunk[e + 1] - 1 : chunkCount;
       const spanChunks = nextStart - curStart;
       if (!(spanChunks >= 0)) throw new ASRError(`stsc hàng ${e} phủ chunk âm`);
-      acc += spanChunks * rows[e][1];
+      acc += spanChunks * stscSamplesPerChunk[e];
     }
   }
+
   const rowIndexForChunk = (ci) => {
     let lo = 0;
-    let hi = rows.length - 1;
+    let hi = stscEntries - 1;
     let ans = -1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      if (rows[mid][0] - 1 <= ci) {
+      if (stscFirstChunk[mid] - 1 <= ci) {
         ans = mid;
         lo = mid + 1;
       } else {
@@ -481,14 +494,10 @@ function attachSampleTable(track, t) {
     if (ans < 0) throw new ASRError(`stsc không phủ chunk ${ci}`);
     return ans;
   };
-  const chunkFirstAu = (ci) => {
-    if (ci < 0 || ci >= chunkCount) throw new ASRError(`chunk ${ci} ngoài stsc`);
-    const e = rowIndexForChunk(ci);
-    return rowFirstAu[e] + (ci - (rows[e][0] - 1)) * rows[e][1];
-  };
+
   const rowIndexForAu = (au) => {
     let lo = 0;
-    let hi = rowFirstAu.length - 1;
+    let hi = stscEntries - 1;
     let ans = 0;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
@@ -501,19 +510,18 @@ function attachSampleTable(track, t) {
     }
     return ans;
   };
+
   const chunkForAu = (au) => {
     let e = rowIndexForAu(au);
-    // Adjust for boundary exactness (cheap, ≤1 step in valid files).
-    while (e + 1 < rows.length && rowFirstAu[e + 1] <= au) e++;
+    while (e + 1 < stscEntries && rowFirstAu[e + 1] <= au) e++;
     while (e > 0 && rowFirstAu[e] > au) e--;
-    const per = rows[e][1];
+    const per = stscSamplesPerChunk[e];
     if (!(per > 0)) throw new ASRError(`stsc hàng ${e} samplesPerChunk vô lý`);
-    let ci = rows[e][0] - 1 + Math.floor((au - rowFirstAu[e]) / per);
-    // Clamp forward if arithmetic lands past the row span (malformed tables).
-    while (e + 1 < rows.length && ci >= rows[e + 1][0] - 1) {
+    let ci = stscFirstChunk[e] - 1 + Math.floor((au - rowFirstAu[e]) / per);
+    while (e + 1 < stscEntries && ci >= stscFirstChunk[e + 1] - 1) {
       e++;
-      const per2 = rows[e][1];
-      ci = rows[e][0] - 1 + Math.floor((au - rowFirstAu[e]) / per2);
+      const per2 = stscSamplesPerChunk[e];
+      ci = stscFirstChunk[e] - 1 + Math.floor((au - rowFirstAu[e]) / per2);
     }
     if (ci < 0) ci = 0;
     if (ci >= chunkCount) ci = chunkCount - 1;
@@ -525,6 +533,7 @@ function attachSampleTable(track, t) {
   let curChunkFirstAu = 0;
   let curAu = 0;
   let curPos = chunkCount > 0 ? chunkOffset(0) : 0;
+
   const resetCursor = () => {
     curRow = 0;
     curChunk = 0;
@@ -533,14 +542,14 @@ function attachSampleTable(track, t) {
     curPos = chunkCount > 0 ? chunkOffset(0) : 0;
     dtsHint = 0;
   };
+
   const auSizeAt = (i) =>
     uniformSize !== 0 ? uniformSize : stsz.readUInt32BE(8 + i * 4);
 
-  /** Direct O(log R + perChunk) locate — no cursor, no O(N) rewalk. */
   const auLocationDirect = (index) => {
     const ci = chunkForAu(index);
     const rIdx = rowIndexForChunk(ci);
-    const firstAu = rowFirstAu[rIdx] + (ci - (rows[rIdx][0] - 1)) * rows[rIdx][1];
+    const firstAu = rowFirstAu[rIdx] + (ci - (stscFirstChunk[rIdx] - 1)) * stscSamplesPerChunk[rIdx];
     const off = index - firstAu;
     const base = chunkOffset(ci);
     let pos;
@@ -550,7 +559,6 @@ function attachSampleTable(track, t) {
       pos = base;
       for (let k = 0; k < off; k++) pos += auSizeAt(firstAu + k);
     }
-    // Sync cursor so subsequent sequential walks stay true O(1).
     curRow = rIdx;
     curChunk = ci;
     curChunkFirstAu = firstAu;
@@ -559,19 +567,18 @@ function attachSampleTable(track, t) {
     return { pos, size: auSizeAt(index) };
   };
 
-  /** Position+size of AU index; forward-sequential stays true O(1), jumps use direct. */
   track.auLocation = function auLocation(index) {
     if (!Number.isInteger(index) || index < 0 || index >= auCount) {
       throw new ASRError(`AU index ${index} ngoài phạm vi`);
     }
     if (index < curAu || index - curAu > 64) return auLocationDirect(index);
     while (curAu < index) {
-      const per = rows[curRow][1];
+      const per = stscSamplesPerChunk[curRow];
       if (curAu + 1 - curChunkFirstAu >= per) {
         curChunk += 1;
         if (curChunk >= chunkCount) throw new ASRError("stco hết chunk trước khi hết AU");
         curChunkFirstAu = curAu + 1;
-        if (curRow + 1 < rows.length && curChunk >= rows[curRow + 1][0] - 1) {
+        if (curRow + 1 < stscEntries && curChunk >= stscFirstChunk[curRow + 1] - 1) {
           curRow += 1;
         }
         curPos = chunkOffset(curChunk);
@@ -583,11 +590,6 @@ function attachSampleTable(track, t) {
     return { pos: curPos, size: auSizeAt(curAu) };
   };
 
-  /**
-   * Sequential walker for extraction. Asserts the sane-muxer invariant:
-   * file offsets non-decreasing in decode order (interleave preserves
-   * intra-track order). Violation = refuse to cut rather than mis-cut.
-   */
   track.iterateAus = function* iterateAus(fromAu = 0, toAuExclusive = auCount) {
     if (!Number.isInteger(fromAu) || !Number.isInteger(toAuExclusive)) {
       throw new ASRError(`MP4 iterateAus [${fromAu},${toAuExclusive}) không phải số nguyên`);
@@ -610,7 +612,148 @@ function attachSampleTable(track, t) {
   };
 }
 
-/** Top-level inspection: walk moov, collect audio traks, pick best supported. */
+/**
+ * Attach Fragmented MP4 (`moof`/`traf`/`tfhd`/`trun`) sample table onto track.
+ */
+function attachFragmentedSampleTable(reader, fileSize, filePath, track, trexMap) {
+  const trex = trexMap.get(track.trackId) ?? {
+    defaultSampleDuration: 1024,
+    defaultSampleSize: 0,
+  };
+  const positions = [];
+  const sizes = [];
+  const cumTicksArr = [];
+  let accTicks = 0;
+
+  for (const box of iterBoxes(reader, 0, fileSize, filePath)) {
+    if (box.type !== "moof") continue;
+    const moofStart = Number(box.start);
+    const moofEnd = endOf(box);
+    for (const child of iterBoxes(reader, Number(box.dataStart), moofEnd, `${filePath}/moof`)) {
+      if (child.type !== "traf") continue;
+      const tfhd = findBox(reader, Number(child.dataStart), endOf(child), "tfhd", "traf/tfhd");
+      if (!tfhd) continue;
+      const tfhdFull = reader.read(Number(tfhd.dataStart), endOf(tfhd) - Number(tfhd.dataStart));
+      if (tfhdFull.length < 8) continue;
+      const tfFlags = ((tfhdFull[1] << 16) | (tfhdFull[2] << 8) | tfhdFull[3]) >>> 0;
+      const trafTrackId = tfhdFull.readUInt32BE(4);
+      if (trafTrackId !== track.trackId) continue;
+
+      let p = 8;
+      let baseDataOffset = moofStart;
+      if (tfFlags & 0x000001) {
+        baseDataOffset = Number(u64b(tfhdFull, p, "tfhd"));
+        p += 8;
+      }
+      if (tfFlags & 0x000002) p += 4;
+      let defaultDuration = trex.defaultSampleDuration;
+      if (tfFlags & 0x000008) {
+        defaultDuration = u32b(tfhdFull, p, "tfhd");
+        p += 4;
+      }
+      let defaultSize = trex.defaultSampleSize;
+      if (tfFlags & 0x000010) {
+        defaultSize = u32b(tfhdFull, p, "tfhd");
+        p += 4;
+      }
+
+      let runningDataPos = baseDataOffset;
+      for (const tbox of iterBoxes(reader, Number(child.dataStart), endOf(child), "traf")) {
+        if (tbox.type !== "trun") continue;
+        const trunFull = reader.read(Number(tbox.dataStart), endOf(tbox) - Number(tbox.dataStart));
+        if (trunFull.length < 8) continue;
+        const trFlags = ((trunFull[1] << 16) | (trunFull[2] << 8) | trunFull[3]) >>> 0;
+        const sampleCount = trunFull.readUInt32BE(4);
+        let tp = 8;
+        if (trFlags & 0x000001) {
+          const dataOffset = i32b(trunFull, tp, "trun");
+          runningDataPos = baseDataOffset + dataOffset;
+          tp += 4;
+        }
+        if (trFlags & 0x000004) tp += 4;
+        const hasDur = (trFlags & 0x000100) !== 0;
+        const hasSize = (trFlags & 0x000200) !== 0;
+        const hasFlags = (trFlags & 0x000400) !== 0;
+        const hasCto = (trFlags & 0x000800) !== 0;
+
+        for (let s = 0; s < sampleCount; s++) {
+          const dur = hasDur ? u32b(trunFull, tp, "trun/dur") : defaultDuration;
+          if (hasDur) tp += 4;
+          const sz = hasSize ? u32b(trunFull, tp, "trun/size") : defaultSize;
+          if (hasSize) tp += 4;
+          if (hasFlags) tp += 4;
+          if (hasCto) tp += 4;
+          if (!(sz > 0) || !(dur > 0)) {
+            throw new ASRError("fMP4 trun: sample size/duration bằng 0 hoặc thiếu default");
+          }
+          positions.push(runningDataPos);
+          sizes.push(sz);
+          cumTicksArr.push(accTicks);
+          runningDataPos += sz;
+          accTicks += dur;
+        }
+      }
+    }
+  }
+
+  const auCount = positions.length;
+  if (auCount === 0) {
+    throw new ASRError("stts rỗng — timeline rỗng");
+  }
+  const posArr = Float64Array.from(positions);
+  const sizeArr = Uint32Array.from(sizes);
+  const dtsTicks = Float64Array.from(cumTicksArr);
+  const ts = track.timescale || 1;
+
+  track.auCount = auCount;
+  track.durationS = accTicks / ts;
+  delete track.isFragmentedCandidate;
+
+  track.auDtsS = function auDtsS(index) {
+    if (!Number.isInteger(index) || index < 0 || index >= auCount) {
+      throw new ASRError(`AU index ${index} ngoài [0,${auCount})`);
+    }
+    return dtsTicks[index] / ts;
+  };
+
+  track.auIndexAtS = function auIndexAtS(seconds) {
+    if (!(seconds > 0)) return 0;
+    const target = seconds * ts;
+    let lo = 0;
+    let hi = auCount - 1;
+    let ans = auCount - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (dtsTicks[mid] >= target) {
+        ans = mid;
+        hi = mid - 1;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    return ans;
+  };
+
+  track.auLocation = function auLocation(index) {
+    if (!Number.isInteger(index) || index < 0 || index >= auCount) {
+      throw new ASRError(`AU index ${index} ngoài phạm vi`);
+    }
+    return { pos: posArr[index], size: sizeArr[index] };
+  };
+
+  track.iterateAus = function* iterateAus(fromAu = 0, toAuExclusive = auCount) {
+    if (!Number.isInteger(fromAu) || !Number.isInteger(toAuExclusive)) {
+      throw new ASRError(`MP4 iterateAus [${fromAu},${toAuExclusive}) không phải số nguyên`);
+    }
+    if (fromAu < 0 || toAuExclusive > auCount || toAuExclusive < fromAu) {
+      throw new ASRError(`MP4 iterateAus [${fromAu},${toAuExclusive}) ngoài [0,${auCount}]`);
+    }
+    for (let i = fromAu; i < toAuExclusive; i++) {
+      yield { index: i, pos: posArr[i], size: sizeArr[i], dtsS: dtsTicks[i] / ts };
+    }
+  };
+}
+
 export function inspectMp4(filePath) {
   const fd = fs.openSync(filePath, "r");
   try {
@@ -619,14 +762,22 @@ export function inspectMp4(filePath) {
     const good = [];
     const rejected = [];
     let sawMoov = false;
+    let trexMap = new Map();
+
     for (const box of iterBoxes(reader, 0, fileSize, filePath)) {
       if (box.type !== "moov") continue;
       sawMoov = true;
+      trexMap = parseTrexDefaults(reader, box);
       for (const trak of iterBoxes(reader, Number(box.dataStart), endOf(box), `${filePath}/moov`)) {
         if (trak.type !== "trak") continue;
         try {
           const parsed = parseAudioTrak(reader, trak, `${filePath}/trak#${good.length + rejected.length}`);
-          if (parsed) good.push(parsed);
+          if (parsed) {
+            if (parsed.isFragmentedCandidate) {
+              attachFragmentedSampleTable(reader, fileSize, filePath, parsed, trexMap);
+            }
+            good.push(parsed);
+          }
         } catch (exc) {
           rejected.push(exc?.message ?? String(exc));
         }
@@ -649,16 +800,12 @@ export function inspectMp4(filePath) {
   }
 }
 
-/** ADTS profile field (2 bits) for an AudioObjectType.
- * AOT 1–4 map directly; SBR (5) / PS (29) stream as LC + in-band implicit
- * signaling (what every muxer does — ADTS cannot encode AOT>4). */
 export function adtsProfile(aot) {
   if (aot >= 1 && aot <= 4) return aot - 1;
-  if (aot === 5 || aot === 29) return 1; // HE-AAC / HE-AACv2 → LC implicit
+  if (aot === 5 || aot === 29) return 1;
   throw new ASRError(`AOT ${aot} không đóng gói được vào ADTS (chỉ AOT 1–4, 5, 29)`);
 }
 
-/** ADTS header (7 bytes, protection_absent=1) wrapping one AU payload. */
 export function adtsHeader(freqIdx, chanCfg, profile, payloadLen) {
   if (!Number.isInteger(freqIdx) || freqIdx < 0 || freqIdx > 12) {
     throw new ASRError(`ADTS freqIdx ${freqIdx} ngoài [0,12] (15 là escape, không dùng trực tiếp)`);
@@ -676,11 +823,11 @@ export function adtsHeader(freqIdx, chanCfg, profile, payloadLen) {
   if (frameLength > 0x1fff) throw new ASRError(`AU ${payloadLen}B vượt ADTS frame limit`);
   const h = Buffer.allocUnsafe(7);
   h[0] = 0xff;
-  h[1] = 0xf1; // MPEG-4 · layer 0 · no CRC
+  h[1] = 0xf1;
   h[2] = (profile << 6) | (freqIdx << 2) | ((chanCfg >> 2) & 0x01);
   h[3] = ((chanCfg & 0x03) << 6) | ((frameLength >> 11) & 0x03);
   h[4] = (frameLength >> 3) & 0xff;
-  h[5] = ((frameLength & 0x07) << 5) | 0x1f; // buffer fullness 0x7FF (VBR marker)
-  h[6] = 0xfc; // fullness low bits · num_aac_frames_in_block − 1 = 0
+  h[5] = ((frameLength & 0x07) << 5) | 0x1f;
+  h[6] = 0xfc;
   return h;
 }

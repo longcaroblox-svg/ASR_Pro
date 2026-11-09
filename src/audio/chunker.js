@@ -17,6 +17,7 @@ const EXT_BY_KIND = new Map([
   ["mp4-aac", "aac"],
   ["mp4-mp3", "mp3"],
   ["mp3", "mp3"],
+  ["aac", "aac"],
   ["wav", "wav"],
 ]);
 
@@ -24,6 +25,7 @@ const WRAP_BY_KIND = new Map([
   ["mp4-aac", "adts"],
   ["mp4-mp3", "raw"],
   ["mp3", "raw"],
+  ["aac", "raw"],
   ["wav", "wav"],
 ]);
 

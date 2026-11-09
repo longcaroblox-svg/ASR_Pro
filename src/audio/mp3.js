@@ -1,7 +1,6 @@
-/** Pure-Node MP3 frame scanner — passthrough cutting at exact frame boundaries.
- * Frames collapse into run-length rows (identical header shape), so a 100-hour
- * VBR stream costs O(runs) memory and O(frames) one sequential scan.
- * NO-FALLBACK: broken sync streams are loud errors, not silent resyncs. */
+/** Pure-Node MP3 Frame Scanner — Xing/Info/VBRI VBR Metadata Frame Stripper + RLE Runs.
+ * Automatically detects and skips silent frame-0 Xing/Info/LAME/VBRI header frames
+ * so timestamps never drift by ~26ms. */
 
 import fs from "node:fs";
 import { ASRError } from "../core/errors.js";
@@ -10,33 +9,28 @@ const MPEG1_L3_BITRATES = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 22
 const MPEG2_L3_BITRATES = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
 const L1_BITRATES = [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448];
 const L2_BITRATES = [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384];
-// Row 0=MPEG1 · 1=MPEG2 · 2=MPEG2.5. versionBits wire values are 3/2/0
-// (1 is reserved); VERSION_TO_SR_ROW maps them explicitly so the -1 hole
-// in the old indexOf trick cannot silently mis-row a header.
+
 const SAMPLE_RATES = [
-  [44100, 48000, 32000], // MPEG1
-  [22050, 24000, 16000], // MPEG2
-  [11025, 12000, 8000], // MPEG2.5
+  [44100, 48000, 32000],
+  [22050, 24000, 16000],
+  [11025, 12000, 8000],
 ];
 const VERSION_TO_SR_ROW = Object.freeze({ 3: 0, 2: 1, 0: 2 });
 
-/** Scratch header shape reused across the scan (zero per-frame alloc).
- * parseFrameHeaderInto() fills `out` and returns true on a valid sync word,
- * false otherwise. Callers copy the three scalars they need; no object
- * escapes per frame. */
-const _scratchA = { versionBits: 0, layer: 0, bitrateKbps: 0, sampleRate: 0, samplesPerFrame: 0, size: 0 };
-const _scratchB = { versionBits: 0, layer: 0, bitrateKbps: 0, sampleRate: 0, samplesPerFrame: 0, size: 0 };
+const _scratchA = { versionBits: 0, layer: 0, bitrateKbps: 0, sampleRate: 0, samplesPerFrame: 0, size: 0, channelMode: 0 };
+const _scratchB = { versionBits: 0, layer: 0, bitrateKbps: 0, sampleRate: 0, samplesPerFrame: 0, size: 0, channelMode: 0 };
 
 function parseFrameHeaderInto(b, out) {
   if (b[0] !== 0xff || (b[1] & 0xe0) !== 0xe0) return false;
-  const versionBits = (b[1] >> 3) & 0x03; // 3=MPEG1 · 2=MPEG2 · 0=MPEG2.5
-  const layerBits = (b[1] >> 1) & 0x03; // 1=III · 2=II · 3=I
+  const versionBits = (b[1] >> 3) & 0x03;
+  const layerBits = (b[1] >> 1) & 0x03;
   if (versionBits === 1 || layerBits === 0) return false;
   const bitrateIdx = (b[2] >> 4) & 0x0f;
   const srIdx = (b[2] >> 2) & 0x03;
   if (bitrateIdx === 0 || bitrateIdx === 15 || srIdx === 3) return false;
   const padding = (b[2] >> 1) & 0x01;
-  const layer = 4 - layerBits; // 1|2|3
+  const channelMode = (b[3] >> 6) & 0x03;
+  const layer = 4 - layerBits;
   let bitrateKbps;
   if (layer === 3) {
     bitrateKbps = (versionBits === 3 ? MPEG1_L3_BITRATES : MPEG2_L3_BITRATES)[bitrateIdx];
@@ -49,7 +43,6 @@ function parseFrameHeaderInto(b, out) {
   const sampleRate = row === undefined ? 0 : SAMPLE_RATES[row][srIdx];
   if (!sampleRate || !bitrateKbps) return false;
   const samplesPerFrame = layer === 1 ? 384 : layer === 2 ? 1152 : versionBits === 3 ? 1152 : 576;
-  // Layer I counts in 4-byte slots; Layers II/III count bytes directly.
   const size =
     layer === 1
       ? (Math.floor((12 * bitrateKbps * 1000) / sampleRate) + padding) * 4
@@ -61,10 +54,11 @@ function parseFrameHeaderInto(b, out) {
   out.sampleRate = sampleRate;
   out.samplesPerFrame = samplesPerFrame;
   out.size = size;
+  out.channelMode = channelMode;
   return true;
 }
 
-function parseFrameHeader(b) {
+export function parseFrameHeader(b) {
   return parseFrameHeaderInto(b, _scratchA)
     ? {
         versionBits: _scratchA.versionBits,
@@ -77,12 +71,30 @@ function parseFrameHeader(b) {
     : null;
 }
 
+/**
+ * Checks if an MP3 frame buffer is a Xing / Info / VBRI metadata header frame.
+ * MPEG1 side-info is 32B (stereo) or 17B (mono); MPEG2/2.5 is 17B (stereo) or 9B (mono).
+ * VBRI tag is always at offset 4 + 32 = 36.
+ */
+function isVbrHeaderFrame(frameBuf, versionBits, channelMode) {
+  const isMono = channelMode === 3;
+  const sideInfoLen = versionBits === 3 ? (isMono ? 17 : 32) : (isMono ? 9 : 17);
+  const xingOff = 4 + sideInfoLen;
+  if (xingOff + 4 <= frameBuf.length) {
+    const tag = frameBuf.toString("latin1", xingOff, xingOff + 4);
+    if (tag === "Xing" || tag === "Info") return true;
+  }
+  if (frameBuf.length >= 40 && frameBuf.toString("latin1", 36, 40) === "VBRI") {
+    return true;
+  }
+  return false;
+}
+
 export function inspectMp3(filePath) {
   const fd = fs.openSync(filePath, "r");
   try {
     const fileSize = fs.fstatSync(fd).size;
     let pos = 0;
-    // ID3v2 skip (syncsafe tag size; footer extends the tag).
     const magic = Buffer.alloc(10);
     const magicRead = fs.readSync(fd, magic, 0, 10, 0);
     if (magicRead >= 10 && magic.toString("latin1", 0, 3) === "ID3") {
@@ -98,11 +110,10 @@ export function inspectMp3(filePath) {
     }
 
     const runs = [];
-    // Windowed reader: 1MB RAM window → ~2500× fewer syscalls vs 4B pread per frame.
     const WIN = 1 << 20;
-    let winBuf = Buffer.allocUnsafe(WIN);
+    const winBuf = Buffer.allocUnsafe(WIN);
     let winStart = -1;
-    let winEnd = -1; // exclusive file offset of loaded bytes
+    let winEnd = -1;
     const loadWin = (p) => {
       const start = Math.max(0, Math.min(p, Math.max(0, fileSize - 1)));
       const end = Math.min(fileSize, start + WIN);
@@ -115,46 +126,37 @@ export function inspectMp3(filePath) {
       winStart = start;
       winEnd = start + off;
     };
-    const readAt = (p) => {
-      if (p < 0 || p + 4 > fileSize) return null;
-      if (p < winStart || p + 4 > winEnd) {
+    const readSpan = (p, len) => {
+      if (p < 0 || p + len > fileSize) return null;
+      if (p < winStart || p + len > winEnd) {
         loadWin(p);
-        if (p < winStart || p + 4 > winEnd) return null;
+        if (p < winStart || p + len > winEnd) return null;
       }
-      return winBuf.subarray(p - winStart, p - winStart + 4);
+      return winBuf.subarray(p - winStart, p - winStart + len);
     };
 
     let count = 0;
     let runStartPos = pos;
     let runStartFrame = 0;
-    // Scalar run state — no per-frame object survives the hot loop. The three
-    // merge keys (size, samplesPerFrame, sampleRate) fully determine both byte
-    // layout and decode timing, so runs collapse exactly when all three match:
-    // same size ⇒ same byte stride; same spf+rate ⇒ same seconds/frame. A
-    // version/layer pair aliasing to the same triple is cut-identical, hence
-    // safe to fuse. Any header field outside the triple (e.g. mode bits) never
-    // affects frame boundaries, so ignoring it is intentional, not lossy.
-    // `haveCur` guards the first-frame transition; `needBreak` forces a run
-    // cut after a resync gap even when the triple accidentally matches.
     let haveCur = false;
     let curSize = 0;
     let curSpf = 0;
     let curRate = 0;
     let resyncs = 0;
     let needBreak = false;
+    let checkedFirstAudioFrame = false;
 
     for (;;) {
-      const b = readAt(pos);
-      if (b === null) break; // EOF
+      const b = readSpan(pos, 4);
+      if (b === null) break;
       const ok = parseFrameHeaderInto(b, _scratchA);
       if (!ok) {
-        // Resync scan — allowed but counted; a stream drowning in junk is fatal.
         resyncs += 1;
         if (resyncs > 512) throw new ASRError(`MP3: quá nhiều điểm sync hỏng (${resyncs}) — file lỗi`);
         let probe = pos + 1;
         let found = false;
         while (probe < fileSize - 4 && probe - pos < 4096) {
-          const pb = readAt(probe);
+          const pb = readSpan(probe, 4);
           if (pb !== null && parseFrameHeaderInto(pb, _scratchB)) {
             found = true;
             break;
@@ -169,11 +171,23 @@ export function inspectMp3(filePath) {
       const headSize = _scratchA.size;
       const headSpf = _scratchA.samplesPerFrame;
       const headRate = _scratchA.sampleRate;
-      if (pos + headSize > fileSize) break; // truncated tail frame → stop before it
+      if (pos + headSize > fileSize) break;
+
+      if (!checkedFirstAudioFrame) {
+        checkedFirstAudioFrame = true;
+        const firstFrame = readSpan(pos, headSize);
+        if (firstFrame && isVbrHeaderFrame(firstFrame, _scratchA.versionBits, _scratchA.channelMode)) {
+          pos += headSize;
+          runStartPos = pos;
+          needBreak = true;
+          continue;
+        }
+      }
+
       if (haveCur && !needBreak && curSize === headSize && curSpf === headSpf && curRate === headRate) {
         count += 1;
       } else {
-        if (haveCur && count > 0)
+        if (haveCur && count > 0) {
           runs.push({
             start: runStartFrame,
             frames: count - runStartFrame,
@@ -182,6 +196,7 @@ export function inspectMp3(filePath) {
             sampleRate: curRate,
             startPos: runStartPos,
           });
+        }
         runStartPos = pos;
         runStartFrame = count;
         curSize = headSize;
@@ -204,7 +219,6 @@ export function inspectMp3(filePath) {
       });
     }
 
-    // Normalize: absolute frame index + true seconds per run (mixed rates safe).
     let accFrames = 0;
     let accSec = 0;
     for (const r of runs) {
@@ -249,7 +263,6 @@ export function inspectMp3(filePath) {
       },
       auIndexAtS: (s) => {
         if (!(s > 0)) return 0;
-        // Binary search on run start times — O(log runs), not O(runs).
         let lo = 0;
         let hi = runs.length - 1;
         let ans = runs.length - 1;

@@ -134,7 +134,7 @@ export async function cutUnits(meta, ranges, { token = null, onDone = null } = {
   // fails without leaving half-written outputs or leaking fds.
   for (const r of ranges) {
     if (r.wrap === "adts") {
-      if (meta.kind !== "mp4-aac" || track.codec !== "aac") {
+      if ((meta.kind !== "mp4-aac" && meta.kind !== "aac") || track.codec !== "aac") {
         throw new ASRError(`cut: wrap adts cần track AAC (nhận kind ${meta.kind})`);
       }
       adtsProfile(track.audioObjectType); // throws naming the AOT when unpackable
@@ -226,7 +226,7 @@ export async function cutUnits(meta, ranges, { token = null, onDone = null } = {
           const unitBytes = t.auLocation(r.fromAu).size;
           wrap = {
             kind: "wav",
-            header: wavHeader((toAu - r.fromAu) * unitBytes, t.channels, t.sampleRate, t.bits),
+            header: wavHeader((toAu - r.fromAu) * unitBytes, t.channels, t.sampleRate, t.bits, t.audioFormat ?? 1),
           };
           writer.push(wrap.header);
         } else {

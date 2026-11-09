@@ -160,8 +160,9 @@ test("convertAudioSpeed physically converts audio to 0.8x with 1.25x duration ex
       ["-i", output08x, "-f", "null", "-"],
       { encoding: "utf8", windowsHide: true },
     );
-    const durMatch = /time=(\d+):(\d+):([0-9.]+)/.exec(probe.stderr);
-    assert.ok(durMatch, "Must output time in stderr");
+    const durMatches = [...probe.stderr.matchAll(/time=(\d+):(\d+):([0-9.]+)/g)];
+    assert.ok(durMatches.length > 0, "Must output time in stderr");
+    const durMatch = durMatches[durMatches.length - 1];
     const seconds = Number(durMatch[1]) * 3600 + Number(durMatch[2]) * 60 + Number(durMatch[3]);
     assert.ok(
       Math.abs(seconds - 5.0) < 0.25,

@@ -1,33 +1,24 @@
-/** Sentence-accurate subtitle composition — ZERO fabricated timestamps.
+/** Knuth-Plass / Viterbi Dynamic Programming Subtitle Composition Engine.
  *
- * TIMING SOURCE OF TRUTH: the server. Cue boundaries come exclusively from
- * real utterance/word timestamps. When the provider supplies word-level times,
- * sentence and clause splits land on EXACT word boundaries. When it does not,
- * the cue simply spans its utterance — we never invent intermediate times.
- *
- * What this module does with TEXT (linguistic accuracy, priority #1):
- *   • catches individual complete sentences (. ! ? … with decimal protection)
- *   • MERGES unfinished fragments across segments into full sentences
- *     (bounded by a silence gap so unrelated speech is never glued)
- *   • SPLITS overlong complete sentences at CLAUSE punctuation only
- *
- * Presentation-timing law (visibility only, never content timing):
- *   min duration 5/6 s · max 7 s · gap ≥ 84 ms · CPS ≤ 20 extension · monotonic.
- *
- * Length (42 chars) is a SOFT target — language is never butchered for it.
- * NO-FALLBACK: structural violations are ERRORS; unreachable ideals are counted
- * as warnings, never hidden. */
+ * 1. TIMING SOURCE OF TRUTH: 100% real server utterance/word timestamps.
+ *    Zero fabricated intermediate timestamps.
+ * 2. GLOBAL OPTIMAL SEGMENTATION: Uses Viterbi / Knuth-Plass Dynamic Programming
+ *    over word boundaries to jointly optimize visual width balance, reading speed (CPS),
+ *    acoustic pause alignment, and Netflix TTSG syntactic-bond rules (breaking after
+ *    clause punctuation and before conjunctions/prepositions; never splitting determiners,
+ *    auxiliaries, or negations from their head words).
+ * 3. CJK & SURROGATE AWARE: Proper code-point iteration and visual width accounting. */
 
 import { Segment, SPEED_DEFAULT, normalizeSpeed } from "../core/domain.js";
 
 export const NETFLIX = Object.freeze({
-  MAX_CHARS: 42, // soft target — accuracy always wins over this number
-  SOFT_MAX_CHARS: 56, // complete sentences longer than this get clause-split
-  MIN_DURATION_S: 5 / 6, // 0.833…
+  MAX_CHARS: 42,
+  SOFT_MAX_CHARS: 56,
+  MIN_DURATION_S: 5 / 6,
   MAX_DURATION_S: 7.0,
   CPS: 20,
-  GAP_MS: 84, // ≈ 2 frames @ 24fps
-  MERGE_GAP_S: 1.5, // max silence across which an unfinished sentence may merge
+  GAP_MS: 84,
+  MERGE_GAP_S: 1.5,
 });
 
 const TERMINAL_RE = /[.!?…。！？]["»”')\]]?$/;
@@ -35,8 +26,6 @@ const CLAUSE_RE = /[,;:、，；：—]["»”')\]]?$/;
 const CJK_CHAR_RE = /[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef]/;
 const CJK_EDGE_RE = /[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef。！？，、；：“”‘’（）《》【】]/;
 
-/** Abbreviations whose trailing dot never ends a sentence (case-insensitive).
- * Multi-dot forms (e.g./i.e./etc./v.v.) are matched as full tokens below. */
 const ABBR_DOT = new Set([
   "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc",
   "no", "fig", "approx", "dept", "est", "min", "max", "inc", "ltd",
@@ -45,7 +34,31 @@ const ABBR_DOT = new Set([
   "sep", "sept", "oct", "nov", "dec",
 ]);
 
-/** Code-point length without `[...t]` array garbage (surrogate-pair aware). */
+/** Words that strongly bind to the FOLLOWING word (Netflix TTSG: do not break after these). */
+const NO_BREAK_AFTER = new Set([
+  // English determiners, articles, auxiliaries, prepositions, pronouns
+  "a", "an", "the", "this", "that", "these", "those", "my", "your", "his",
+  "her", "its", "our", "their", "some", "any", "no", "every", "each",
+  "is", "am", "are", "was", "were", "be", "been", "being", "have", "has",
+  "had", "do", "does", "did", "will", "would", "shall", "should", "can",
+  "could", "may", "might", "must", "not", "don't", "doesn't", "didn't",
+  "won't", "wouldn't", "can't", "cannot", "couldn't", "shouldn't", "isn't",
+  "aren't", "wasn't", "weren't", "haven't", "hasn't", "hadn't", "to", "of",
+  "in", "on", "at", "by", "for", "with", "from", "into", "onto", "very",
+  // Vietnamese determiners, quantifiers, tense/aspect/negation markers, prepositions
+  "các", "những", "mọi", "mỗi", "một", "đang", "sẽ", "đã", "vừa", "mới",
+  "không", "chẳng", "chưa", "đừng", "chớ", "rất", "quá", "hơi", "cực",
+  "của", "trong", "trên", "dưới", "với", "bằng", "tại", "về", "cho",
+]);
+
+/** Conjunctions & clause starters where breaking BEFORE them is natural. */
+const GOOD_BREAK_BEFORE = new Set([
+  "and", "but", "or", "nor", "so", "yet", "because", "although", "though",
+  "while", "whereas", "since", "unless", "until", "when", "whenever", "where",
+  "nhưng", "mà", "hoặc", "hay", "vì", "bởi", "do", "nên", "nếu", "khi",
+  "tuy", "dù", "để", "rằng", "là", "còn", "thì",
+]);
+
 function charLen(text) {
   let count = 0;
   for (let i = 0; i < text.length; i++) {
@@ -59,20 +72,29 @@ function charLen(text) {
   return count;
 }
 
-/**
- * CJK-aware visual/information width: each CJK ideograph/fullwidth char counts
- * as 2 units (so 28 Hanzi == 56 Latin chars for softMaxChars, and 10 Hanzi/s ==
- * 20 CPS reading speed). Pure Latin/Vietnamese text equals charLen(text) 1:1.
- */
-function visualLen(text) {
+function isCjkCodePoint(cp) {
+  return (
+    (cp >= 0x3000 && cp <= 0x9fff) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xff00 && cp <= 0xffef) ||
+    (cp >= 0x20000 && cp <= 0x2fa1f)
+  );
+}
+
+/** Surrogate-safe CJK-weighted visual length (CJK = 2, Latin/VI = 1). */
+export function visualLen(text) {
   let count = 0;
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);
+    let cp = code;
     if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length) {
       const next = text.charCodeAt(i + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) i++;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        cp = ((code - 0xd800) << 10) + (next - 0xdc00) + 0x10000;
+        i++;
+      }
     }
-    count += CJK_CHAR_RE.test(text[i]) ? 2 : 1;
+    count += isCjkCodePoint(cp) ? 2 : 1;
   }
   return count;
 }
@@ -85,30 +107,17 @@ export function endsSentence(text) {
   return TERMINAL_RE.test(text.trim());
 }
 
-/** Smart CJK-aware concatenation of two adjacent word tokens. */
 function concatWordPair(left, right) {
   if (!left) return right;
   if (!right) return left;
   const lastL = left[left.length - 1];
   const firstR = right[0];
-  if (CJK_EDGE_RE.test(lastL) && CJK_EDGE_RE.test(firstR)) {
-    return `${left}${right}`;
-  }
   if (CJK_EDGE_RE.test(lastL) || CJK_EDGE_RE.test(firstR)) {
-    // No space between CJK punctuation and Latin, or CJK ideograph and CJK.
-    if (/[，。！？、；：“”‘’（）《》【】]/.test(lastL) || /[，。！？、；：“”‘’（）《》【】]/.test(firstR)) {
-      return `${left}${right}`;
-    }
     return `${left}${right}`;
   }
   return `${left} ${right}`;
 }
 
-/** Splits collapsed text into complete sentences (punctuation kept attached).
- * Decimal numbers ("3.5") are protected from being cut at their dot.
- * Abbreviations ("Dr.", "e.g.", "i.e.", "etc.", "v.v.", single-letter initials)
- * never trigger a split — the dot is part of the token, not a terminal.
- * CJK terminals 。！？ plus 。-style closers are first-class citizens. */
 export function splitSentences(text) {
   const flat = collapse(text);
   const out = [];
@@ -118,23 +127,20 @@ export function splitSentences(text) {
     if (ch !== "." && ch !== "!" && ch !== "?" && ch !== "…" && ch !== "。" && ch !== "！" && ch !== "？")
       continue;
     if (ch === "." && /\d/.test(flat[i - 1] ?? "") && /\d/.test(flat[i + 1] ?? "")) {
-      continue; // decimal point
+      continue;
     }
     if (ch === "." && isAbbreviationDot(flat, i)) {
-      continue; // "Dr." / "e.g." / "T." — not a sentence boundary
+      continue;
     }
     let end = i + 1;
-    // Consume consecutive terminal marks ("?!", "...") before closing quotes.
     while (end < flat.length && /[.!?…。！？]/.test(flat[end])) end++;
     while (end < flat.length && /["»”')\]]/.test(flat[end])) end++;
-    // CJK: no whitespace required after 。！？ — always a boundary.
     if (ch === "。" || ch === "！" || ch === "？") {
       out.push(flat.slice(start, end).trim());
       start = end;
       i = end - 1;
       continue;
     }
-    // Only cut here if the next word starts after whitespace.
     if (end >= flat.length || /\s/.test(flat[end])) {
       out.push(flat.slice(start, end).trim());
       start = end;
@@ -146,22 +152,16 @@ export function splitSentences(text) {
   return out.filter(Boolean);
 }
 
-/** True when flat[i] is a "." belonging to an abbreviation, not a terminal.
- * Checks the token ending at i: single initials ("T."), titled abbreviations
- * ("Dr."), and multi-dot forms ("e.g.", "i.e.", "etc.", "v.v."). */
 function isAbbreviationDot(flat, i) {
-  if (flat[i + 1] === ".") return false; // part of ellipsis "..."
+  if (flat[i + 1] === ".") return false;
   const before = flat.slice(0, i);
-  const token = (before.split(/\s+/).pop() ?? "").replace(/^["«“'(\[]+/, "");
+  const token = (before.split(/\s+/).pop() ?? "").replace(/^["«“'([]+/, "");
   if (/(?:^|\s)(?:e\.g\.|i\.e\.|etc\.|v\.v\.|(?:[a-z]\.){2,})$/i.test(flat.slice(0, i + 1))) return true;
-  // Single-letter initial: "T." / "J." mid-sentence.
   if (/^[A-Za-z]$/.test(token)) return true;
-  // Titled abbreviation: "Dr." / "Mr." / "Tp." ...
   if (ABBR_DOT.has(token.toLowerCase())) return true;
   return false;
 }
 
-/** Join word tokens preserving CJK adjacency when tokens are CJK. */
 function joinWordTokens(words, referenceText = "") {
   if (words.length === 0) return "";
   if (referenceText && !referenceText.includes(" ") && CJK_CHAR_RE.test(referenceText)) {
@@ -175,8 +175,6 @@ function joinWordTokens(words, referenceText = "") {
   return words.map((w) => w.text).join(" ");
 }
 
-/** Emits k word-exact cue pieces cut after each index in `breaks` (+ tail).
- * Every boundary is a REAL server word edge — zero fabricated timestamps. */
 function pushWordSlices(raw, words, breaks, referenceText = "") {
   let s = 0;
   for (let b = 0; b < breaks.length; b++) {
@@ -209,56 +207,139 @@ function squashWhitespace(v) {
   return collapse(v).replace(/\s+/g, "");
 }
 
-/** True when the word list covers the whole cue text (whitespace-insensitive),
- * so word-edge splits lose no characters — works for unspaced CJK too. */
 function wordsCoverText(words, text) {
   const joined = words.map((w) => w.text).join("");
   return joined.length > 0 && squashWhitespace(joined) === squashWhitespace(text);
 }
 
-/** Balanced word-boundary cuts with no punctuation signal: picks the k−1 word
- * edges nearest the even visual-width targets, with an acoustic pause bonus so
- * natural speech pauses between words are preferred when breaking long CJK/Latin
- * utterances. */
-function chooseEvenBreaks(words, targetCount) {
-  if (!Number.isInteger(targetCount) || targetCount < 2) return [];
-  if (!Array.isArray(words) || words.length < targetCount) return [];
-  const prefix = [];
-  let acc = 0;
+function cleanWordToken(wText) {
+  return String(wText ?? "")
+    .toLowerCase()
+    .replace(/^["«“'([—]+|["»”')\].,!?;:、，；：。！？…—]+$/g, "");
+}
+
+/**
+ * Knuth-Plass / Viterbi Dynamic Programming Optimal Word-Boundary Partitioner.
+ * Finds globally optimal k-1 break indices in `words` minimizing total linguistic,
+ * visual balance, CPS, and acoustic pause penalties.
+ * When `clauseOnly === true`, restricts breaks strictly to punctuation-bearing words.
+ */
+export function chooseOptimalBreaksDP(words, targetCount, { clauseOnly = false, softMax = 56, cps = 20 } = {}) {
+  const n = words.length;
+  if (!Number.isInteger(targetCount) || targetCount < 2 || n < targetCount) return [];
+
   const hasCjk = words.some((w) => CJK_CHAR_RE.test(w.text));
-  for (let i = 0; i < words.length; i++) {
-    acc += visualLen(words[i].text) + (i > 0 && !hasCjk ? 1 : 0);
-    prefix.push(acc);
+  const prefix = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) {
+    prefix[i + 1] = prefix[i] + visualLen(words[i].text) + (i > 0 && !hasCjk ? 1 : 0);
   }
-  const total = prefix[prefix.length - 1] ?? 0;
-  if (!(total > 0)) return [];
-  const need = targetCount - 1;
-  const breaks = [];
-  let prev = -1;
-  for (let t = 1; t <= need; t++) {
-    const target = (total * t) / targetCount;
-    const maxIdx = words.length - 1 - (need - t);
-    let best = null;
-    let bestScore = Infinity;
-    for (let i = prev + 1; i <= maxIdx; i++) {
-      const dist = Math.abs(prefix[i] - target);
-      const pauseS = Math.max(0, (words[i + 1]?.start ?? words[i].end) - words[i].end);
-      // Acoustic pause bonus only when a real gap (>20ms) exists between words.
-      const pauseBonus = pauseS > 0.02 ? Math.min(6, pauseS * 12) : 0;
-      const score = dist - pauseBonus;
-      if (score < bestScore) {
-        bestScore = score;
-        best = i;
-      }
+  const totalLen = prefix[n];
+  if (!(totalLen > 0)) return [];
+  const idealLen = totalLen / targetCount;
+
+  // Precompute per-boundary linguistic & acoustic transition scores after word i (0 <= i < n-1)
+  const isPunct = new Uint8Array(n);
+  const boundaryBonus = new Float64Array(n);
+  for (let i = 0; i < n - 1; i++) {
+    const wCur = words[i].text;
+    const hasPunct = TERMINAL_RE.test(wCur) || CLAUSE_RE.test(wCur);
+    isPunct[i] = hasPunct ? 1 : 0;
+
+    let score = 0;
+    if (hasPunct) {
+      score += 12.0;
+    } else {
+      const cleanCur = cleanWordToken(wCur);
+      const cleanNext = cleanWordToken(words[i + 1].text);
+      if (NO_BREAK_AFTER.has(cleanCur)) score -= 14.0;
+      if (GOOD_BREAK_BEFORE.has(cleanNext)) score += 4.5;
     }
-    if (best === null || best <= prev) return [];
-    breaks.push(best);
-    prev = best;
+    const pauseS = Math.max(0, (words[i + 1]?.start ?? words[i].end) - words[i].end);
+    if (pauseS > 0.02) {
+      score += Math.min(8.0, 14.0 * Math.log1p((pauseS - 0.02) * 10));
+    }
+    boundaryBonus[i] = score;
+  }
+
+  if (clauseOnly) {
+    let punctCount = 0;
+    for (let i = 0; i < n - 1; i++) punctCount += isPunct[i];
+    if (punctCount < targetCount - 1) return [];
+  }
+
+  // DP table: dp[step * n + endIdx] = min cost to partition words[0..endIdx] into (step + 1) cues
+  const dp = new Float64Array(targetCount * n).fill(Number.POSITIVE_INFINITY);
+  const parent = new Int32Array(targetCount * n).fill(-1);
+
+  const spanCost = (startWord, endWord) => {
+    const segLen = prefix[endWord + 1] - prefix[startWord] - (startWord > 0 && !hasCjk ? 1 : 0);
+    const diff = segLen - idealLen;
+    let cost = (diff * diff) / Math.max(1, idealLen);
+    if (segLen > softMax) {
+      const over = segLen - softMax;
+      cost += over * over * 1.5;
+    }
+    const dur = Math.max(0.2, words[endWord].end - words[startWord].start);
+    const segCps = segLen / dur;
+    if (segCps > cps) {
+      const overCps = segCps - cps;
+      cost += overCps * overCps * 0.8;
+    }
+    if (endWord === startWord && segLen < 4 && n >= targetCount * 2) {
+      cost += 6.0; // discourage 1-word micro-orphans when avoidable
+    }
+    if (endWord < n - 1) {
+      cost -= boundaryBonus[endWord];
+    }
+    return cost;
+  };
+
+  // Base case: step = 0 (first cue spans 0..j)
+  const maxFirstEnd = n - targetCount;
+  for (let j = 0; j <= maxFirstEnd; j++) {
+    if (clauseOnly && !isPunct[j]) continue;
+    dp[j] = spanCost(0, j);
+  }
+
+  // Transitions: step = 1 .. targetCount - 1
+  for (let step = 1; step < targetCount; step++) {
+    const isLastStep = step === targetCount - 1;
+    const minEnd = step;
+    const maxEnd = isLastStep ? n - 1 : n - (targetCount - step);
+    const jStart = isLastStep ? n - 1 : minEnd;
+
+    for (let j = jStart; j <= maxEnd; j++) {
+      if (!isLastStep && clauseOnly && !isPunct[j]) continue;
+      let bestCost = Number.POSITIVE_INFINITY;
+      let bestPrev = -1;
+      for (let i = step - 1; i < j; i++) {
+        const prevCost = dp[(step - 1) * n + i];
+        if (prevCost === Number.POSITIVE_INFINITY) continue;
+        const c = prevCost + spanCost(i + 1, j);
+        if (c < bestCost) {
+          bestCost = c;
+          bestPrev = i;
+        }
+      }
+      dp[step * n + j] = bestCost;
+      parent[step * n + j] = bestPrev;
+    }
+  }
+
+  const finalCost = dp[(targetCount - 1) * n + (n - 1)];
+  if (!Number.isFinite(finalCost)) return [];
+
+  const breaks = new Array(targetCount - 1);
+  let curEnd = n - 1;
+  for (let step = targetCount - 1; step >= 1; step--) {
+    const prevEnd = parent[step * n + curEnd];
+    if (prevEnd < 0) return [];
+    breaks[step - 1] = prevEnd;
+    curEnd = prevEnd;
   }
   return breaks;
 }
 
-/** Normalizes provider word entries to second-based timeline words. */
 function toTimelineWords(words, speed = 1.0) {
   if (!Array.isArray(words)) return null;
   const scale = Math.abs(speed - 1.0) > 1e-9;
@@ -277,8 +358,6 @@ function toTimelineWords(words, speed = 1.0) {
   return list.length > 0 ? list : null;
 }
 
-/** Walks timeline words and groups them into sentences aligned with `sents`.
- * Returns [{text, words:[…]}] — every group's times are REAL word times. */
 function groupWordsIntoSentences(words, sents = null) {
   if (Array.isArray(sents) && sents.length > 1) {
     const aligned = [];
@@ -317,60 +396,11 @@ function groupWordsIntoSentences(words, sents = null) {
     }
   }
   if (buf.length > 0) {
-    groups.push({ text: bufText, words: buf }); // trailing unfinished fragment
+    groups.push({ text: bufText, words: buf });
   }
   return groups;
 }
 
-/** Chooses clause break indices among punctuation-bearing words only.
- * Guarantees enough punctuation candidates remain for subsequent cuts so an
- * early break never starves the tail. Returns [] when punctuation cannot supply
- * enough cuts — callers then keep the sentence whole instead of cutting mid-clause. */
-function chooseClauseBreaks(words, targetCount) {
-  const prefix = [];
-  let acc = 0;
-  const hasCjk = words.some((w) => CJK_CHAR_RE.test(w.text));
-  for (let i = 0; i < words.length; i++) {
-    acc += visualLen(words[i].text) + (i > 0 && !hasCjk ? 1 : 0);
-    prefix.push(acc);
-  }
-  const total = prefix[prefix.length - 1] ?? 0;
-  const punctIdx = [];
-  for (let i = 0; i < words.length - 1; i++) {
-    if (TERMINAL_RE.test(words[i].text) || CLAUSE_RE.test(words[i].text)) punctIdx.push(i);
-  }
-  const need = targetCount - 1;
-  if (punctIdx.length < need) return []; // refuse: no linguistic signal to cut on
-  const breaks = [];
-  let prevCandPos = -1;
-  for (let k = 1; k <= need; k++) {
-    const target = (total * k) / targetCount;
-    const maxCandPos = punctIdx.length - 1 - (need - k);
-    let bestPos = -1;
-    let bestDist = Infinity;
-    for (let p = prevCandPos + 1; p <= maxCandPos; p++) {
-      const i = punctIdx[p];
-      const dist = Math.abs(prefix[i] - target);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestPos = p;
-      }
-    }
-    if (bestPos < 0 || bestPos <= prevCandPos) return [];
-    breaks.push(punctIdx[bestPos]);
-    prevCandPos = bestPos;
-  }
-  return breaks;
-}
-
-/**
- * Builds broadcast-ready cues from merged segments.
- * Supports `opts.speed` in [0.5, 1.5] (default 1.0): projects source timestamps
- * and word boundaries to the target playback timeline (t' = t / speed), scales
- * the linguistic silence merge threshold proportionally, and enforces all
- * broadcast visibility laws (minS, maxS, gapMs, cps) in viewer playback time.
- * @returns {{cues: Array<object>, warnings: string[]}}
- */
 export function buildCues(segments, opts = {}) {
   const softMax = opts.softMaxChars ?? NETFLIX.SOFT_MAX_CHARS;
   const minS = opts.minS ?? NETFLIX.MIN_DURATION_S;
@@ -407,7 +437,6 @@ export function buildCues(segments, opts = {}) {
     const rawEndMs =
       seg.rawEndMs != null ? (scaleTime ? Math.round(seg.rawEndMs / speed) : seg.rawEndMs) : null;
     if (sents.length <= 1 || !words) {
-      // Single sentence, or no real word times → NEVER fabricate intermediate cuts.
       units.push({
         start: segStart,
         end: segEnd,
@@ -421,7 +450,6 @@ export function buildCues(segments, opts = {}) {
     }
     const groups = groupWordsIntoSentences(words, sents);
     if (groups.length !== sents.length) {
-      // Token/punctuation mismatch — stay honest, emit one true-span cue.
       units.push({
         start: segStart,
         end: segEnd,
@@ -440,17 +468,13 @@ export function buildCues(segments, opts = {}) {
         text: g.text,
         words: g.words,
         sentenceFlag: endsSentence(g.text),
-        rawStartMs: null, // derived sub-span: no 1:1 server ms to claim
+        rawStartMs: null,
         rawEndMs: null,
       });
     }
   }
 
-  // ── Phase 2 · cross-segment MERGE of unfinished sentences ────────────────
-  // JianYing Chinese (CJK) ASR segments speech into complete breath/clause
-  // utterances without trailing periods. Never fuse distinct CJK utterances
-  // across segments — each JianYing CJK utterance is already a self-contained
-  // caption unit.
+  // ── Phase 2 · cross-segment MERGE of unfinished sentences
   const assembled = [];
   let cur = null;
   for (const u of units) {
@@ -465,7 +489,7 @@ export function buildCues(segments, opts = {}) {
       !isCjkPair &&
       !cur.sentenceFlag &&
       silence <= effectiveMergeGapS + 1e-9 &&
-      silence >= -(scaleTime ? 0.05 / speed : 0.05) && // tolerate micro overlaps from server timestamps
+      silence >= -(scaleTime ? 0.05 / speed : 0.05) &&
       combinedLen <= softMax * 2;
     if (worthMerging) {
       cur.text = concatWordPair(cur.text, u.text);
@@ -482,7 +506,7 @@ export function buildCues(segments, opts = {}) {
   }
   if (cur !== null) assembled.push(cur);
 
-  // ── Phase 3 · clause-SPLIT of overlong sentences — word-exact only ───────
+  // ── Phase 3 · Viterbi DP clause/word-exact SPLIT of overlong sentences
   const raw = [];
   for (const a of assembled) {
     const vLen = visualLen(a.text);
@@ -494,18 +518,21 @@ export function buildCues(segments, opts = {}) {
     const k = Math.ceil(vLen / softMax);
     const wordsAligned = Array.isArray(a.words) && a.words.length > 0;
     const canCutWords = wordsAligned && (a.words.length === tokens.length || wordsCoverText(a.words, a.text));
-    const breaks = canCutWords ? chooseClauseBreaks(a.words, k) : [];
+    const breaks = canCutWords ? chooseOptimalBreaksDP(a.words, k, { clauseOnly: true, softMax, cps }) : [];
     if (breaks.length < k - 1) {
       if (a.sources && a.sources.length > 1 && a.end - a.start > maxS) {
         for (const s of a.sources) raw.push(s);
         continue;
       }
-      const even = canCutWords && wordsCoverText(a.words, a.text) ? chooseEvenBreaks(a.words, k) : [];
-      if (even.length === k - 1 && k > 1) {
-        pushWordSlices(raw, a.words, even, a.text);
+      const dpEven =
+        canCutWords && wordsCoverText(a.words, a.text)
+          ? chooseOptimalBreaksDP(a.words, k, { clauseOnly: false, softMax, cps })
+          : [];
+      if (dpEven.length === k - 1 && k > 1) {
+        pushWordSlices(raw, a.words, dpEven, a.text);
         continue;
       }
-      raw.push(a); // no safe cut at all → keep the true-span whole cue
+      raw.push(a);
       continue;
     }
     pushWordSlices(raw, a.words, breaks, a.text);
@@ -513,7 +540,7 @@ export function buildCues(segments, opts = {}) {
 
   raw.sort((a, b) => a.start - b.start || a.end - b.end);
 
-  // ── Phase 4 · visibility timing law (never alters content timing source) ─
+  // ── Phase 4 · visibility timing law
   const cues = [];
   let cursorTime = -Infinity;
   const phaseWarnings = [];
@@ -591,7 +618,6 @@ function collectWarnings(cues, { cps, minS, gap, maxS = null }) {
   return warnings;
 }
 
-/** Structural validation — these MUST be zero for an SRT to render. */
 export function validateNetflix(cues) {
   const errors = [];
   let prevEnd = -Infinity;

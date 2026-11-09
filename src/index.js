@@ -1,55 +1,121 @@
-/** ASR Studio UltraX (NodeJS) — Jianying-first extreme cloud ASR.
- * JianYing ONLY · NO-FALLBACK: one engine, errors are surfaced, never downgraded. */
+/** ASR Studio UltraX v9.0.0 Public Library Barrel Export. */
 
-export { VERSION, CloudPipeline, MODEL_AUTO, MODEL_JIANYING, MODELS } from "./pipeline/orchestrator.js";
-export { resolveEngine, resolveProvider, validateModel } from "./pipeline/load-balance.js";
 export {
+  CloudPipeline,
+  MODEL_AUTO,
+  MODEL_JIANYING,
+  MODELS,
+  VERSION,
+} from "./pipeline/orchestrator.js";
+export {
+  resolveEngine,
+  resolveProvider,
+  validateModel,
+} from "./pipeline/load-balance.js";
+export { mapAsCompleted } from "./pipeline/work-queue.js";
+export {
+  createIncrementalMerger,
+  mergeParts,
+  myersEditDistance,
+  normalize,
+  sequenceRatio,
+  similarity,
+  trySplicePartialOverlap,
+} from "./pipeline/merge.js";
+
+export { CancelToken } from "./core/cancel.js";
+export { PERF, httpTimeout } from "./core/config.js";
+export {
+  Chunk,
   Options,
   Result,
   Segment,
-  Word,
-  Chunk,
-  isValidCue,
-  SPEED_MIN,
-  SPEED_MAX,
   SPEED_DEFAULT,
+  SPEED_MAX,
+  SPEED_MIN,
+  Word,
+  isValidCue,
   normalizeSpeed,
 } from "./core/domain.js";
-export { CancelToken } from "./core/cancel.js";
-export { PERF, httpTimeout } from "./core/config.js";
-export { METRICS, MetricsRegistry } from "./core/metrics.js";
 export {
-  ASRError,
   AppError,
+  ASRError,
   CancelledError,
-  ProviderError,
-  ExportError,
   CircuitOpenError,
-  NetworkError,
   ConnectTimeoutError,
+  ExportError,
+  NetworkError,
+  ProviderError,
   ReadTimeoutError,
   isCancelled,
 } from "./core/errors.js";
-export { jianying } from "./decode/jianying.js";
+export { METRICS, MetricsRegistry } from "./core/metrics.js";
+
+export { AdaptiveChunker } from "./audio/chunker.js";
+export { cutAll, cutUnits } from "./audio/cut.js";
+export { extractAudio } from "./audio/extract.js";
+export { inspectMedia } from "./audio/media.js";
+export { inspectAac, parseAdtsHeaderInto } from "./audio/aac.js";
+export { inspectMp3 } from "./audio/mp3.js";
+export { AAC_FREQ_TABLE, adtsHeader, adtsProfile, inspectMp4, parseAsc } from "./audio/mp4.js";
+export { planOverlap } from "./audio/overlap.js";
 export {
-  getSession,
+  boundaries,
+  detectSilenceMidpoints,
+  detectSilenceWithFfmpeg,
+  detectWavSilenceRMS,
+} from "./audio/silence.js";
+export { convertAudioSpeed, getFfmpegPath, isFfmpegAvailable } from "./audio/speed.js";
+export { CAPCUT_VOICES, textToSpeech } from "./audio/tts.js";
+export { inspectWav, wavHeader } from "./audio/wav.js";
+
+export {
+  aws4VodSignature,
+  buildApplyUploadAuthHeaders,
+  buildApplyUploadQuery,
+} from "./decode/aws4.js";
+export { Deadline, fullJitterSleep } from "./decode/backoff.js";
+export { CircuitBreaker } from "./decode/circuit-breaker.js";
+export { crc32, crc32Fallback, crc32FileHex, crc32Hex } from "./decode/crc32-fast.js";
+export {
+  Session,
   buildSession,
+  getSession,
   setSession,
   NetworkError as PoolNetworkError,
   ConnectTimeoutError as PoolConnectTimeoutError,
   ReadTimeoutError as PoolReadTimeoutError,
 } from "./decode/http-pool.js";
-export { mergeParts, similarity } from "./pipeline/merge.js";
-export { renderSrt, rawSrt, rawSrtRows, cleanSubtitleText, atomicWrite } from "./export/srt.js";
-export { compose, validate } from "./export/timeline.js";
-export { exactMsToSrt, srtTimeFloat, scaleRangeMs } from "./export/timestamp-guard.js";
+export { jianying } from "./decode/jianying.js";
+export { jyHeaders, tdid } from "./decode/jy-sign.js";
+export { TokenBucket } from "./decode/rate-governor.js";
+export { parseJianyingUtterances } from "./decode/result-parser.js";
+
 export { LiveSRTPublisher } from "./export/live-publisher.js";
-export { NETFLIX, buildCues, validateNetflix, splitSentences } from "./export/netflix.js";
+export { atomicWriteLrc, renderLrc } from "./export/lrc.js";
+export { buildRunMetadata, writeMetadata } from "./export/metadata.js";
+export {
+  NETFLIX,
+  buildCues,
+  chooseOptimalBreaksDP,
+  collapse,
+  endsSentence,
+  splitSentences,
+  validateNetflix,
+  visualLen,
+} from "./export/netflix.js";
+export { writeRawUtterances } from "./export/raw-json.js";
+export { atomicWrite, cleanSubtitleText, rawSrt, rawSrtRows, renderSrt } from "./export/srt.js";
+export { compose, composeWithWarnings, validate } from "./export/timeline.js";
+export {
+  detectInversion,
+  exactMsToSrt,
+  scaleRangeMs,
+  srtTimeFloat,
+} from "./export/timestamp-guard.js";
+export { atomicWriteTxt, renderTxt } from "./export/txt.js";
+export { atomicWriteVtt, renderVtt } from "./export/vtt.js";
+
 export { formatEta, formatThroughput, progressSmooth } from "./ui/telemetry.js";
-export { textToSpeech, CAPCUT_VOICES } from "./audio/tts.js";
-export { extractAudio } from "./audio/extract.js";
-export { convertAudioSpeed, getFfmpegPath, isFfmpegAvailable } from "./audio/speed.js";
-export { detectSilenceMidpoints, detectSilenceWithFfmpeg, boundaries } from "./audio/silence.js";
-export { renderVtt, atomicWriteVtt } from "./export/vtt.js";
-export { renderLrc, atomicWriteLrc } from "./export/lrc.js";
-export { renderTxt, atomicWriteTxt } from "./export/txt.js";
+export { atomicWriteText, readBytes } from "./util/io-fast.js";
+export { monotonicS, sleep } from "./util/time.js";

@@ -35,9 +35,9 @@ import {
 } from "./load-balance.js";
 import { mapAsCompleted } from "./work-queue.js";
 
-export { MODEL_AUTO, MODEL_JIANYING, MODELS };
+export { MODEL_AUTO, MODEL_JIANYING, MODELS, Options };
 
-export const VERSION = "8.4.0";
+export const VERSION = "9.0.0";
 
 export class CloudPipeline {
   // NOTE — single-use w.r.t. cancellation: the constructor CancelToken stays
@@ -473,5 +473,3 @@ function toShiftedWordTimeline(words, chunkStart) {
   return local.map((w) => Word({ start: w.start + chunkStart, end: w.end + chunkStart, text: w.text }));
 }
 
-// Re-export for pipeline consumers.
-export { Options };

@@ -1,20 +1,19 @@
-/** Pure-Node WAV parser — RIFF/PCM passthrough cutting.
- * Units = frames (blockAlign granules); positions are contiguous by format,
- * so lookups are O(1) arithmetic. NO-FALLBACK: non-PCM codecs are hard errors. */
+/** Pure-Node WAV RIFF/PCM & IEEE-754 Float32 Parser — O(1) contiguous frame arithmetic. */
 
 import fs from "node:fs";
 import { ASRError } from "../core/errors.js";
 
-/** Canonical 44-byte PCM WAV header with exact final sizes (no patching pass). */
-export function wavHeader(dataBytes, channels, sampleRate, bits) {
+export function wavHeader(dataBytes, channels, sampleRate, bits, audioFormat = 1) {
   if (!Number.isSafeInteger(dataBytes) || dataBytes < 0)
     throw new ASRError("WAV header: dataBytes không hợp lệ");
   if (!Number.isInteger(channels) || channels < 1 || channels > 64)
     throw new ASRError(`WAV header: channels ${channels} ngoài [1,64]`);
   if (!Number.isInteger(sampleRate) || sampleRate < 1000 || sampleRate > 768000)
     throw new ASRError(`WAV header: sampleRate ${sampleRate} ngoài [1000,768000]`);
-  if (![8, 16, 24, 32].includes(bits)) throw new ASRError(`WAV header: bits ${bits} không hỗ trợ (cần 8/16/24/32)`);
-  if ((channels * bits) % 8 !== 0) throw new ASRError("WAV header: channels*bits không chia hết cho 8");
+  if (![8, 16, 24, 32].includes(bits))
+    throw new ASRError(`WAV header: bits ${bits} không hỗ trợ (cần 8/16/24/32)`);
+  if ((channels * bits) % 8 !== 0)
+    throw new ASRError("WAV header: channels*bits không chia hết cho 8");
   const blockAlign = Math.floor((channels * bits) / 8);
   if (!(blockAlign >= 1 && blockAlign <= 65535))
     throw new ASRError(`WAV header: blockAlign ${blockAlign} ngoài [1,65535]`);
@@ -29,7 +28,7 @@ export function wavHeader(dataBytes, channels, sampleRate, bits) {
   h.write("WAVE", 8, "latin1");
   h.write("fmt ", 12, "latin1");
   h.writeUInt32LE(16, 16);
-  h.writeUInt16LE(1, 20); // PCM
+  h.writeUInt16LE(audioFormat === 3 ? 3 : 1, 20);
   h.writeUInt16LE(channels, 22);
   h.writeUInt32LE(sampleRate, 24);
   h.writeUInt32LE(byteRate, 28);
@@ -58,8 +57,8 @@ export function inspectWav(filePath) {
       if (hbRead !== 8) throw new ASRError(`WAV đọc hụt header chunk tại ${pos} (được ${hbRead}/8B)`);
       const id = hb.toString("latin1", 0, 4);
       let size = hb.readUInt32LE(4);
-      if (id === "data" && size === 0) size = fileSize - pos - 8; // streaming-written wav
-      if (pos + 8 + size > fileSize && id !== "data") break; // tolerate trailing junk
+      if (id === "data" && size === 0) size = fileSize - pos - 8;
+      if (pos + 8 + size > fileSize && id !== "data") break;
       if (id === "fmt ") {
         if (size < 16) throw new ASRError(`WAV: fmt chunk ${size}B quá ngắn (cần ≥16)`);
         const b = Buffer.alloc(Math.min(size, 40));
@@ -68,13 +67,13 @@ export function inspectWav(filePath) {
         const audioFormat = b.readUInt16LE(0);
         const channels = b.readUInt16LE(2);
         const sampleRate = b.readUInt32LE(4);
+        const byteRate = b.readUInt32LE(8);
         const blockAlign = b.readUInt16LE(12);
         const bits = b.readUInt16LE(14);
-        const byteRate = b.readUInt32LE(8);
         let effectiveFormat = audioFormat;
-        if (audioFormat === 0xfffe && b.length >= 26) effectiveFormat = b.readUInt16LE(24); // extensible SubFormat
-        if (effectiveFormat !== 1) {
-          throw new ASRError(`WAV: format ${effectiveFormat} không phải PCM thuần — không hỗ trợ`);
+        if (audioFormat === 0xfffe && b.length >= 26) effectiveFormat = b.readUInt16LE(24);
+        if (effectiveFormat !== 1 && !(effectiveFormat === 3 && bits === 32)) {
+          throw new ASRError(`WAV: format ${effectiveFormat} không phải PCM/Float32 thuần — không hỗ trợ`);
         }
         if (!Number.isInteger(channels) || channels < 1 || channels > 64)
           throw new ASRError(`WAV: channels ${channels} ngoài [1,64]`);
@@ -86,11 +85,11 @@ export function inspectWav(filePath) {
           throw new ASRError(`WAV: blockAlign ${blockAlign} ≠ channels*bits/8 (${(channels * bits) / 8})`);
         if (byteRate !== sampleRate * blockAlign)
           throw new ASRError(`WAV: byteRate ${byteRate} ≠ sampleRate*blockAlign`);
-        fmt = { channels, sampleRate, blockAlign, bits };
+        fmt = { channels, sampleRate, blockAlign, bits, audioFormat: effectiveFormat };
       } else if (id === "data") {
         data = { pos: pos + 8, size: Math.min(size, fileSize - pos - 8) };
       }
-      pos += 8 + size + (size % 2); // chunks are word-aligned
+      pos += 8 + size + (size % 2);
     }
     if (!fmt || !data) throw new ASRError("WAV: thiếu fmt hoặc data chunk");
     if (data.size <= 0) throw new ASRError("WAV: data rỗng — không có frame nào");
@@ -101,12 +100,13 @@ export function inspectWav(filePath) {
 
     const track = {
       codec: "pcm",
+      audioFormat: fmt.audioFormat,
       channels: fmt.channels,
       bits: fmt.bits,
       blockAlign: fmt.blockAlign,
       sampleRate,
       auCount: unitCount,
-      contiguous: true, // PCM frames are laid out back-to-back by definition
+      contiguous: true,
       durationS: unitCount / sampleRate,
       auDtsS: (i) => {
         if (!Number.isInteger(i) || i < 0 || i >= unitCount) throw new ASRError(`frame ${i} ngoài phạm vi`);

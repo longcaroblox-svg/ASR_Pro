@@ -1,12 +1,19 @@
 {
   "name": "asr-studio-ultrax",
-  "version": "8.4.0",
-  "description": "ASR Studio UltraX (NodeJS) — Jianying-first extreme cloud ASR → live atomic SRT. Zero-dependency, zero-ffmpeg passthrough audio, NO-FALLBACK.",
+  "version": "9.0.0",
+  "description": "ASR Studio UltraX v9.0.0 (NodeJS) — Jianying-first extreme cloud ASR → live atomic SRT. Zero-dependency, zero-ffmpeg passthrough audio (MP4/fMP4/MOV/M4A/MP3/AAC/WAV), Viterbi DP Subtitle Engine, Myers Bit-Parallel Merger, NO-FALLBACK.",
   "type": "module",
   "engines": {
     "node": ">=18.0.0"
   },
   "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./cli": "./src/cli.js",
+    "./gui": "./src/gui.js",
+    "./probe": "./src/model-probe.js",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "asr-ultrax": "bin/asr-ultrax.js"
   },
@@ -26,7 +33,11 @@
     "asr",
     "subtitle",
     "srt",
+    "vtt",
+    "lrc",
     "jianying",
+    "capcut",
+    "tts",
     "ultrax"
   ],
   "license": "MIT",

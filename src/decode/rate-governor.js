@@ -1,4 +1,6 @@
-/** Token-bucket rate governor. */
+/** Generic Cell Rate Algorithm (GCRA) Virtual-Time Scheduler (TokenBucket compatible).
+ * Replaces polling sleep loops with O(1) exact Theoretical Arrival Time (TAT) reservation,
+ * eliminating thundering-herd wakeups across concurrent workers. */
 
 import { PERF } from "../core/config.js";
 import { sleep } from "../util/time.js";
@@ -6,8 +8,8 @@ import { sleep } from "../util/time.js";
 export class TokenBucket {
   #rate;
   #capacity;
-  #tokens;
-  #updatedMs;
+  #emissionIntervalMs;
+  #tatMs;
 
   constructor(rateRps = null, capacity = null) {
     const rate = rateRps ?? PERF.RATE_RPS;
@@ -20,11 +22,22 @@ export class TokenBucket {
     }
     this.#rate = rate;
     this.#capacity = cap;
-    this.#tokens = this.#capacity;
-    this.#updatedMs = performance.now();
+    this.#emissionIntervalMs = 1000 / rate;
+    this.#tatMs = performance.now() - this.#capacity * this.#emissionIntervalMs;
   }
 
-  /** Reserves cost tokens (default 1); resolves false when the timeout elapses first. */
+  get rate() {
+    return this.#rate;
+  }
+
+  get capacity() {
+    return this.#capacity;
+  }
+
+  reset() {
+    this.#tatMs = performance.now() - this.#capacity * this.#emissionIntervalMs;
+  }
+
   async acquire(timeoutS = 30.0, cost = 1) {
     if (!Number.isFinite(cost) || !(cost > 0)) {
       throw new TypeError("TokenBucket acquire cost must be > 0, got " + JSON.stringify(cost));
@@ -32,21 +45,23 @@ export class TokenBucket {
     if (cost > this.#capacity) {
       throw new RangeError("TokenBucket cost " + cost + " exceeds capacity " + this.#capacity);
     }
-    const deadlineMs = timeoutS === null ? null : performance.now() + timeoutS * 1000;
-    for (;;) {
-      const nowMs = performance.now();
-      const elapsedS = (nowMs - this.#updatedMs) / 1000;
-      this.#updatedMs = nowMs;
-      this.#tokens = Math.min(this.#capacity, this.#tokens + elapsedS * this.#rate);
-      if (this.#tokens >= cost) {
-        this.#tokens -= cost;
-        return true;
-      }
-      const needS = (cost - this.#tokens) / this.#rate;
-      if (deadlineMs !== null && performance.now() + needS * 1000 > deadlineMs) {
-        return false;
-      }
-      await sleep(Math.min(50, Math.max(1, needS * 1000)));
+    const nowMs = performance.now();
+    const burstToleranceMs = this.#capacity * this.#emissionIntervalMs;
+    const incrementMs = cost * this.#emissionIntervalMs;
+    const minTat = nowMs - burstToleranceMs;
+    const baseTat = Math.max(this.#tatMs, minTat);
+    const nextTat = baseTat + incrementMs;
+    const waitMs = nextTat - nowMs;
+
+    if (waitMs <= 0) {
+      this.#tatMs = nextTat;
+      return true;
     }
+    if (timeoutS !== null && waitMs > timeoutS * 1000) {
+      return false;
+    }
+    this.#tatMs = nextTat;
+    await sleep(waitMs);
+    return true;
   }
 }
