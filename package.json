@@ -1,0 +1,36 @@
+{
+  "name": "asr-studio-ultrax",
+  "version": "8.4.0",
+  "description": "ASR Studio UltraX (NodeJS) — Jianying-first extreme cloud ASR → live atomic SRT. Zero-dependency, zero-ffmpeg passthrough audio, NO-FALLBACK.",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "main": "src/index.js",
+  "bin": {
+    "asr-ultrax": "bin/asr-ultrax.js"
+  },
+  "scripts": {
+    "test": "node --test \"tests/**/*.mjs\"",
+    "build": "node scripts/build-dist.mjs",
+    "build:fast": "node scripts/build-dist.mjs --no-verify",
+    "verify:dist": "node scripts/verify-dist.mjs",
+    "start": "node dist/gui.js",
+    "cli": "node bin/asr-ultrax.js",
+    "gui": "node src/gui.js",
+    "gui:dist": "node dist/gui.js",
+    "cli:dist": "node dist/bin/asr-ultrax.js",
+    "probe": "node src/model-probe.js"
+  },
+  "keywords": [
+    "asr",
+    "subtitle",
+    "srt",
+    "jianying",
+    "ultrax"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

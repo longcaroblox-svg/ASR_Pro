@@ -1,0 +1,81 @@
+{
+  "name": "asr-studio-ultrax",
+  "version": "8.4.0",
+  "description": "ASR Studio UltraX (NodeJS) — Jianying-first extreme cloud ASR → live atomic SRT. Zero-dependency, zero-ffmpeg passthrough audio, NO-FALLBACK.",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./cli": "./cli.bundle.mjs",
+    "./gui": "./gui.bundle.mjs",
+    "./probe": "./model-probe.bundle.mjs",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "asr-ultrax": "bin/asr-ultrax.js"
+  },
+  "files": [
+    "bin/",
+    "*.js",
+    "*.mjs",
+    "*.map",
+    "BUILD.json",
+    "README.md",
+    "run.bat",
+    "run.sh"
+  ],
+  "scripts": {
+    "start": "node gui.js",
+    "cli": "node bin/asr-ultrax.js",
+    "probe": "node model-probe.js"
+  },
+  "keywords": [
+    "asr",
+    "subtitle",
+    "srt",
+    "jianying",
+    "ultrax"
+  ],
+  "license": "MIT",
+  "build": [
+    {
+      "label": "library",
+      "entry": "src/index.js",
+      "out": "index.js",
+      "bytes": 107147,
+      "mapBytes": 416976,
+      "sha256": "0780b8e0657a2ec02a1eac770a71449f385263a5290acfd318a0f6ae70f4e36c",
+      "inputs": 43
+    },
+    {
+      "label": "cli",
+      "entry": "src/cli.js",
+      "out": "cli.bundle.mjs",
+      "bytes": 109916,
+      "mapBytes": 429374,
+      "sha256": "617770ca6592f370f4650199810656c55bba63f2de61690372d514f9d765aabb",
+      "inputs": 43
+    },
+    {
+      "label": "gui",
+      "entry": "src/gui.js",
+      "out": "gui.bundle.mjs",
+      "bytes": 143810,
+      "mapBytes": 478899,
+      "sha256": "fce2913828158bcf4b0dcf332c5d7fc4684dc20c63f93d2d4df85f063643e434",
+      "inputs": 41
+    },
+    {
+      "label": "probe",
+      "entry": "src/model-probe.js",
+      "out": "model-probe.bundle.mjs",
+      "bytes": 58150,
+      "mapBytes": 251550,
+      "sha256": "437e5625f2871d34edd2b693b405a644412cea19faf65bb7800daea0cb78a9dd",
+      "inputs": 23
+    }
+  ]
+}
