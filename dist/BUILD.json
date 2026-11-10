@@ -1,47 +1,47 @@
 {
   "name": "asr-studio-ultrax",
   "version": "9.0.0",
-  "builtAt": "2026-11-09T05:59:31.248Z",
+  "builtAt": "2026-11-10T12:18:39.997Z",
   "node": "v24.22.2",
   "target": [
     "node18"
   ],
-  "bundleBytes": 2157738,
+  "bundleBytes": 2165909,
   "entries": [
     {
       "label": "library",
       "entry": "src/index.js",
       "out": "index.js",
-      "bytes": 120074,
-      "mapBytes": 451517,
-      "sha256": "ac72418f28639e4257c8cb9cb5fede41061ada547677235ae1b2b040e35bfd68",
+      "bytes": 120151,
+      "mapBytes": 451835,
+      "sha256": "9bf8819ee57f4eb60933bee1b0885e109fcca7366a1ffe123148452d4a2aa432",
       "inputs": 44
     },
     {
       "label": "cli",
       "entry": "src/cli.js",
       "out": "cli.bundle.mjs",
-      "bytes": 120556,
-      "mapBytes": 462024,
-      "sha256": "73279b8f6e2e96ee8b3c69ff9c91b905c179590d77737b80659f3be2a8a9e188",
+      "bytes": 120633,
+      "mapBytes": 462342,
+      "sha256": "17af86002e7af6672d446959582212ded7b24d18303ece9be0a2f830a018c8a6",
       "inputs": 44
     },
     {
       "label": "gui",
       "entry": "src/gui.js",
       "out": "gui.bundle.mjs",
-      "bytes": 154472,
-      "mapBytes": 511536,
-      "sha256": "6afe4e6e3f40353b5864250d50189eb1b0214de45410146bdaa341ef622d1ef2",
+      "bytes": 157145,
+      "mapBytes": 515849,
+      "sha256": "7b312476a0bd50ef213115e85392ee6ec8989331b70043338632e35284c68aa5",
       "inputs": 42
     },
     {
       "label": "probe",
       "entry": "src/model-probe.js",
       "out": "model-probe.bundle.mjs",
-      "bytes": 65052,
-      "mapBytes": 272507,
-      "sha256": "686a6162d83077ed6e6117a552a1bd49f2f691a3f550a6435b8bddd2b89d48ef",
+      "bytes": 65129,
+      "mapBytes": 272825,
+      "sha256": "87847381f2d4dc58d564fba2e044940a7b9b502479b8a701664468c84009104e",
       "inputs": 24
     }
   ],

@@ -497,25 +497,25 @@ const PAGE = `<!DOCTYPE html>
     <div class="app-title">ASR STUDIO ULTRAX PRO // PARALLEL WORKSTATION</div>
     <div class="title-badges">
       <span class="badge-mono" id="liveBadge">ORIGINAL 1:1 · ZERO-TOUCH</span>
-      <span class="badge-mono" id="queueStatsBadge">QUEUE: 0 | ACTIVE: 0</span>
+      <span class="badge-mono" id="queueStatsBadge">TỔNG: 0 | SONG SONG: 0 | XONG: 0</span>
     </div>
   </div>
 
   <div class="workstation-grid">
     <!-- CỘT TRÁI: NGUỒN MEDIA & CẤU HÌNH TỐC ĐỘ / LUỒNG -->
     <div class="panel">
-      <div class="section-title">1. Nguồn Media & Thêm Hàng Loạt</div>
+      <div class="section-title">1. Nguồn Media & Thêm Hàng Loạt (Hỗ trợ 100+ file)</div>
 
       <div class="row">
-        <input id="pathInput" type="text" placeholder="Dán đường dẫn file hoặc thư mục…" style="flex:1" onkeydown="if(event.key==='Enter')applyPathInput()">
+        <input id="pathInput" type="text" placeholder="Dán đường dẫn file hoặc thư mục chứa nhiều video/audio…" style="flex:1" onkeydown="if(event.key==='Enter')applyPathInput()">
         <button onclick="applyPathInput()">Thêm</button>
         <button onclick="openFs()">Duyệt…</button>
       </div>
 
       <input id="filePicker" type="file" multiple accept="video/*,audio/*,.mp4,.mkv,.mov,.avi,.webm,.wmv,.ts,.m4v,.mp3,.m4a,.wav,.flac,.ogg,.aac,.opus" style="display:none" onchange="onFilePicked(this.files)">
       <div id="dropZone" onclick="document.getElementById('filePicker').click()">
-        <div id="dropTitle">Kéo thả 1 hoặc NHIỀU file media vào đây</div>
-        <div class="muted">Hỗ trợ chọn nhiều file MP4, MKV, MOV, MP3, M4A, WAV, FLAC · Tự động xếp hàng đợi</div>
+        <div id="dropTitle">Kéo thả đồng thời lên tới 100+ Video / Âm Thanh vào đây</div>
+        <div class="muted">Hỗ trợ nạp hàng loạt 100+ file MP4, MKV, MOV, MP3, M4A, WAV, FLAC · Xử lý song song 100% cùng lúc không cần hàng đợi</div>
       </div>
 
       <!-- ĐIỀU KHIỂN TỐC ĐỘ & SỐ LUỒNG SONG SONG -->
@@ -523,7 +523,7 @@ const PAGE = `<!DOCTYPE html>
         <div class="speed-header">
           <div>
             <div class="section-title" style="color:var(--text)">2. Tốc Độ & Luồng Song Song</div>
-            <div class="muted">Tốc độ ASR & số file chạy song song</div>
+            <div class="muted">Tốc độ ASR & chế độ xử lý song song</div>
           </div>
           <span class="speed-badge" id="speedReadout">1.00x</span>
         </div>
@@ -545,11 +545,15 @@ const PAGE = `<!DOCTYPE html>
         <div class="row" style="margin-top:4px">
           <span class="muted" style="font-size:12px;white-space:nowrap">Luồng song song:</span>
           <select id="concurrency" style="flex:1;height:32px">
-            <option value="1">1 file tuần tự</option>
-            <option value="2" selected>2 file song song (Đề xuất)</option>
-            <option value="3">3 file song song</option>
-            <option value="4">4 file song song</option>
+            <option value="all" selected>⚡ Toàn bộ song song 100% · Không hàng đợi (Kể cả 100+ file cùng lúc)</option>
+            <option value="100">100 file song song cùng lúc</option>
+            <option value="50">50 file song song cùng lúc</option>
+            <option value="20">20 file song song cùng lúc</option>
+            <option value="10">10 file song song cùng lúc</option>
             <option value="6">6 file song song</option>
+            <option value="4">4 file song song</option>
+            <option value="2">2 file song song</option>
+            <option value="1">1 file tuần tự</option>
           </select>
         </div>
       </div>
@@ -565,7 +569,7 @@ const PAGE = `<!DOCTYPE html>
     <!-- CỘT PHẢI: BATCH QUEUE & TIẾN TRÌNH SONG SONG -->
     <div class="panel">
       <div class="row" style="justify-content:space-between">
-        <div class="section-title">3. Hàng Đợi Xử Lý Song Song (Batch Queue)</div>
+        <div class="section-title">3. Xử Lý Song Song Toàn Bộ (Song Song 100% Cùng Lúc · Không Cần Hàng Đợi)</div>
         <select id="model" style="display:none">
           \${MODELS_OPTIONS}
         </select>
@@ -577,7 +581,7 @@ const PAGE = `<!DOCTYPE html>
 
       <!-- ACTION BAR -->
       <div class="row" style="gap:8px">
-        <button id="start" class="btn-primary" style="flex:2;height:42px;font-size:13.5px" onclick="startBatch()">BẮT ĐẦU CHẠY HÀNG LOẠT (.SRT ONLY)</button>
+        <button id="start" class="btn-primary" style="flex:2;height:42px;font-size:13.5px" onclick="startBatch()">BẮT ĐẦU XỬ LÝ TOÀN BỘ CÙNG LÚC (SONG SONG 100% · SRT ONLY)</button>
         <button id="cancel" style="flex:1;height:42px" onclick="cancelBatch()" disabled>HỦY TẤT CẢ</button>
       </div>
 
@@ -597,7 +601,7 @@ const PAGE = `<!DOCTYPE html>
           <tbody id="queueBody">
             <tr>
               <td colspan="6" style="text-align:center;padding:28px 12px;color:var(--muted)">
-                Hàng đợi trống. Kéo thả nhiều file media hoặc bấm "Duyệt…" để thêm file.
+                Danh sách trống. Kéo thả hàng loạt 100+ file media hoặc bấm "Duyệt…" để xử lý song song cùng lúc.
               </td>
             </tr>
           </tbody>
@@ -632,8 +636,9 @@ const PAGE = `<!DOCTYPE html>
     <button class="btn-sm" onclick="document.getElementById('fsDialog').close()">Đóng</button>
   </div>
   <div class="row-wrap" id="fsRoots" style="margin-bottom:6px"></div>
-  <div class="row" style="margin-bottom:6px">
+  <div class="row" style="margin-bottom:6px;gap:8px">
     <button class="btn-sm" onclick="fsUp()">↑ Lên thư mục cha</button>
+    <button class="btn-sm btn-primary" onclick="fsAddAllMedia()">+ Thêm Tất Cả Media Trong Thư Mục Này</button>
   </div>
   <div id="fsList"></div>
 </dialog>
@@ -798,7 +803,7 @@ function updateStats() {
   const total = queue.length;
   const running = queue.filter((j) => j.status === "RUNNING").length;
   const done = queue.filter((j) => j.status === "DONE").length;
-  queueStatsBadge.textContent = "QUEUE: " + total + " | ACTIVE: " + running + " | DONE: " + done;
+  queueStatsBadge.textContent = "TỔNG: " + total + " | SONG SONG: " + running + " | XONG: " + done;
   if (total > 0) {
     const totalProgress = queue.reduce((acc, j) => acc + (j.progress || 0), 0) / total;
     bar.style.width = Math.round(totalProgress) + "%";
@@ -809,9 +814,20 @@ function updateStats() {
   }
 }
 
+let renderScheduled = false;
+function scheduleRenderQueue() {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  requestAnimationFrame(() => {
+    renderScheduled = false;
+    renderQueue();
+    updateStats();
+  });
+}
+
 function renderQueue() {
   if (queue.length === 0) {
-    queueBody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:28px 12px;color:var(--muted)">Hàng đợi trống. Kéo thả nhiều file media hoặc bấm "Duyệt…" để thêm file.</td></tr>';
+    queueBody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:28px 12px;color:var(--muted)">Danh sách trống. Kéo thả hàng loạt 100+ file media hoặc bấm "Duyệt…" để xử lý song song cùng lúc.</td></tr>';
     return;
   }
   let html = "";
@@ -854,8 +870,9 @@ function escapeHtml(s) {
 
 async function onFilePicked(files) {
   if (!files || !files.length) return;
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
+  const fileList = Array.from(files);
+  appendLog("Đang nạp " + fileList.length + " file media vào hệ thống song song…");
+  await Promise.all(fileList.map(async (file) => {
     try {
       const resolved = await api(
         "/api/resolve-file?name=" + encodeURIComponent(file.name) + "&size=" + encodeURIComponent(file.size),
@@ -876,6 +893,10 @@ async function onFilePicked(files) {
     } catch (err) {
       appendLog("Lỗi nạp " + file.name + ": " + err.message);
     }
+  }));
+  scheduleRenderQueue();
+  if (isBatchRunning) {
+    pumpBatchWorkers();
   }
 }
 
@@ -884,7 +905,18 @@ async function applyPathInput() {
   if (!val) return;
   try {
     const info = await api("/api/probe-file?path=" + encodeURIComponent(val));
-    addQueueItem(info.path, info.name, info.size || 0);
+    if (info.isDir) {
+      if (info.files && info.files.length) {
+        for (const f of info.files) {
+          addQueueItem(f.path, f.name, f.size || 0);
+        }
+        appendLog("Đã nạp " + info.files.length + " file media từ thư mục: " + info.path);
+      } else {
+        alert("Thư mục không chứa file media hỗ trợ.");
+      }
+    } else {
+      addQueueItem(info.path, info.name, info.size || 0);
+    }
     document.getElementById("pathInput").value = "";
   } catch (err) {
     alert(err.message);
@@ -909,6 +941,9 @@ function appendLog(msg) {
   const line = document.createElement("div");
   line.textContent = msg;
   log.appendChild(line);
+  while (log.childElementCount > 500) {
+    log.removeChild(log.firstChild);
+  }
   log.scrollTop = log.scrollHeight;
 }
 
@@ -921,8 +956,7 @@ es.addEventListener("progress", (e) => {
       job.progress = d.value;
       job.status = "RUNNING";
       job.statusText = d.message;
-      renderQueue();
-      updateStats();
+      scheduleRenderQueue();
     }
   } else {
     lastProgress = Math.max(lastProgress, d.value);
@@ -945,9 +979,8 @@ es.addEventListener("done", (e) => {
       job.outputPath = d.output;
       job.statusText = "Hoàn tất (" + d.cues + " câu trong " + d.elapsed.toFixed(1) + "s)";
       appendLog("[100%] Xuất .SRT: " + d.output);
-      renderQueue();
-      updateStats();
       activeWorkersCount--;
+      scheduleRenderQueue();
       pumpBatchWorkers();
     }
   } else {
@@ -969,9 +1002,8 @@ es.addEventListener("failed", (e) => {
       job.statusText = "Lỗi";
       job.error = d.error;
       appendLog("[LỖI " + d.jobId + "] " + d.error);
-      renderQueue();
-      updateStats();
       activeWorkersCount--;
+      scheduleRenderQueue();
       pumpBatchWorkers();
     }
   } else {
@@ -987,9 +1019,8 @@ es.addEventListener("cancelled", (e) => {
     if (job) {
       job.status = "IDLE";
       job.statusText = "Đã hủy";
-      renderQueue();
-      updateStats();
       activeWorkersCount--;
+      scheduleRenderQueue();
       pumpBatchWorkers();
     }
   } else {
@@ -1006,6 +1037,12 @@ async function api(pathName, body) {
   return res.json();
 }
 
+function getConcurrency() {
+  const el = document.getElementById("concurrency");
+  if (!el || el.value === "all") return 999999;
+  return parseInt(el.value, 10) || 999999;
+}
+
 function startBatch() {
   if (queue.length === 0) {
     const manualPath = document.getElementById("pathInput").value.trim().replace(/^["']|["']$/g, "");
@@ -1013,62 +1050,64 @@ function startBatch() {
       applyPathInput().then(() => startBatch());
       return;
     }
-    alert("Hãy thêm ít nhất một file media vào hàng đợi.");
+    alert("Hãy thêm ít nhất một file media.");
     return;
   }
   isBatchRunning = true;
   document.getElementById("start").disabled = true;
   document.getElementById("cancel").disabled = false;
-  statusEl.textContent = "Đang xử lý hàng loạt…";
-  liveBadge.textContent = "ĐANG CHẠY SONG SONG…";
+  statusEl.textContent = "Đang xử lý song song toàn bộ file cùng lúc…";
+  liveBadge.textContent = "100% SONG SONG CÙNG LÚC";
 
-  const concurrency = parseInt(document.getElementById("concurrency").value, 10) || 2;
-  for (let i = 0; i < concurrency; i++) {
-    pumpBatchWorkers();
-  }
+  pumpBatchWorkers();
 }
 
 async function pumpBatchWorkers() {
   if (!isBatchRunning) return;
-  const concurrency = parseInt(document.getElementById("concurrency").value, 10) || 2;
-  if (activeWorkersCount >= concurrency) return;
+  const concurrency = getConcurrency();
 
-  const nextJob = queue.find((j) => j.status === "IDLE");
-  if (!nextJob) {
+  const idleJobs = queue.filter((j) => j.status === "IDLE");
+  if (idleJobs.length === 0) {
     if (activeWorkersCount === 0) {
       isBatchRunning = false;
       document.getElementById("start").disabled = false;
       document.getElementById("cancel").disabled = true;
-      statusEl.textContent = "Toàn bộ hàng đợi đã hoàn tất!";
+      statusEl.textContent = "Toàn bộ file đã hoàn tất 100%!";
       liveBadge.textContent = "ORIGINAL 1:1 · ZERO-TOUCH";
-      appendLog("[HOÀN TẤT] Toàn bộ hàng đợi đã xử lý xong!");
+      appendLog("[HOÀN TẤT] Toàn bộ " + queue.length + " file đã xử lý xong!");
     }
     return;
   }
 
-  nextJob.status = "RUNNING";
-  nextJob.statusText = "Đang bắt đầu…";
-  nextJob.progress = 0;
-  activeWorkersCount++;
-  renderQueue();
-  updateStats();
+  const toStart = idleJobs.slice(0, Math.max(0, concurrency - activeWorkersCount));
+  if (toStart.length === 0) return;
 
-  try {
-    await api("/api/start", {
-      jobId: nextJob.id,
-      input: nextJob.path,
-      speed: nextJob.speed || currentSpeed,
-    });
-  } catch (err) {
-    nextJob.status = "ERROR";
-    nextJob.statusText = "Lỗi khởi tạo: " + err.message;
-    nextJob.error = err.message;
-    appendLog("[LỖI " + nextJob.id + "] " + err.message);
-    activeWorkersCount--;
-    renderQueue();
-    updateStats();
-    pumpBatchWorkers();
+  for (const nextJob of toStart) {
+    nextJob.status = "RUNNING";
+    nextJob.statusText = "Đang bắt đầu song song…";
+    nextJob.progress = 0;
+    activeWorkersCount++;
+
+    (async (job) => {
+      try {
+        await api("/api/start", {
+          jobId: job.id,
+          input: job.path,
+          speed: job.speed || currentSpeed,
+        });
+      } catch (err) {
+        job.status = "ERROR";
+        job.statusText = "Lỗi khởi tạo: " + err.message;
+        job.error = err.message;
+        appendLog("[LỖI " + job.id + "] " + err.message);
+        activeWorkersCount--;
+        scheduleRenderQueue();
+        pumpBatchWorkers();
+      }
+    })(nextJob);
   }
+
+  scheduleRenderQueue();
 }
 
 async function cancelIndividualJob(jobId) {
@@ -1084,8 +1123,7 @@ async function cancelBatch() {
   liveBadge.textContent = "ORIGINAL 1:1 · ZERO-TOUCH";
   queue.forEach((j) => { if (j.status === "RUNNING") j.status = "IDLE"; });
   activeWorkersCount = 0;
-  renderQueue();
-  updateStats();
+  scheduleRenderQueue();
 }
 
 function downloadJobSrt(outPath) {
@@ -1119,6 +1157,7 @@ function copySrt() {
 }
 
 let currentFsParent = "";
+let currentFsMediaEntries = [];
 async function openFs() {
   await loadFs("");
   document.getElementById("fsDialog").showModal();
@@ -1128,6 +1167,7 @@ async function loadFs(p) {
   const data = await api("/api/fs?path=" + encodeURIComponent(p));
   document.getElementById("fsPath").textContent = data.path;
   currentFsParent = data.parent || data.path;
+  currentFsMediaEntries = (data.entries || []).filter((e) => !e.dir);
 
   const rootsEl = document.getElementById("fsRoots");
   rootsEl.innerHTML = "";
@@ -1166,6 +1206,18 @@ async function loadFs(p) {
 
 async function fsUp() {
   if (currentFsParent) await loadFs(currentFsParent);
+}
+
+function fsAddAllMedia() {
+  if (!currentFsMediaEntries || !currentFsMediaEntries.length) {
+    alert("Không tìm thấy file media nào trong thư mục này.");
+    return;
+  }
+  for (const entry of currentFsMediaEntries) {
+    addQueueItem(entry.path, entry.name, entry.size);
+  }
+  document.getElementById("fsDialog").close();
+  appendLog("Đã nạp " + currentFsMediaEntries.length + " file media từ thư mục vào hệ thống.");
 }
 
 setSpeed(1.0);
@@ -1624,12 +1676,39 @@ export function startGui({ openBrowser = true } = {}) {
           json(res, 404, { error: `Không tìm thấy file: ${raw}` });
           return;
         }
+        if (st.isDirectory()) {
+          const files = fs
+            .readdirSync(resolved, { withFileTypes: true })
+            .filter((e) => !e.isDirectory() && MEDIA_EXT_RE.test(e.name))
+            .map((e) => {
+              const full = path.join(resolved, e.name);
+              let size = 0;
+              try {
+                size = fs.statSync(full).size;
+              } catch {}
+              return {
+                path: full,
+                name: e.name,
+                size,
+                durationS: probeMediaDurationS(full),
+              };
+            });
+          state.lastBrowsedDir = resolved;
+          json(res, 200, {
+            isDir: true,
+            path: resolved,
+            files,
+            durationS: 0,
+          });
+          return;
+        }
         if (!st.isFile()) {
           json(res, 400, { error: `Đường dẫn không phải là file: ${raw}` });
           return;
         }
         state.lastBrowsedDir = path.dirname(resolved);
         json(res, 200, {
+          isDir: false,
           path: resolved,
           name: path.basename(resolved),
           size: st.size,

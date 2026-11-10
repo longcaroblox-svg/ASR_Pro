@@ -169,7 +169,8 @@ export const PERF = Object.freeze({
   // Server upload streaming: 1MB pipe chunks (default; 64KB default wastes event-loop turns).
   UPLOAD_HWM_BYTES: 1 << 20,
 
-  POOL_SIZE: 32,
+  // HTTP socket pool: supports 100+ concurrent videos/audios simultaneously with zero queue
+  POOL_SIZE: envPositiveInt("ASR_POOL_SIZE", 1024, { min: 32, max: 8192 }),
 
   // Default: NO read/connect kill-switch. Waits forever.
   // Override only if you really want one, e.g. ASR_JY_POLL_READ=120
@@ -203,7 +204,7 @@ export const PERF = Object.freeze({
 
   CIRCUIT_FAILS: 8,
   CIRCUIT_RESET_S: 45.0,
-  RATE_RPS: 8.0,
+  RATE_RPS: envPositiveFloat("ASR_RATE_RPS", 100.0, { min: 1.0, max: 1000.0 }),
 
   jyTimeout(kind = "poll") {
     if (kind === "upload") return httpTimeout(this.JY_CONNECT_TO, this.JY_UPLOAD_READ_TO);
